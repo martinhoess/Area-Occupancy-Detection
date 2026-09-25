@@ -30,7 +30,7 @@ PLATFORMS = [Platform.BINARY_SENSOR, Platform.NUMBER, Platform.SENSOR]
 # Device information
 DEVICE_MANUFACTURER: Final = "Hankanman"
 DEVICE_MODEL: Final = "Area Occupancy Detector"
-DEVICE_SW_VERSION: Final = "2026.8.1"
+DEVICE_SW_VERSION: Final = "2026.9.101"
 CONF_VERSION: Final = 18
 CONF_VERSION_MINOR: Final = 0
 HA_RECORDER_DAYS: Final = 10  # days
@@ -91,6 +91,8 @@ CONF_EXCLUDE_FROM_ALL_AREAS: Final = "exclude_from_all_areas"
 CONF_SLEEP_START: Final = "sleep_start"
 CONF_SLEEP_END: Final = "sleep_end"
 CONF_HEALTH_ENABLED: Final = "health_enabled"
+CONF_HOME_ENTITY: Final = "home_entity"
+CONF_HOME_AWAY_DELAY: Final = "home_away_delay"
 
 # People configuration constants
 CONF_PEOPLE: Final = "people"
@@ -138,6 +140,8 @@ DEFAULT_EXCLUDE_FROM_ALL_AREAS: Final = False
 DEFAULT_SLEEP_START: Final = "23:00:00"
 DEFAULT_SLEEP_END: Final = "07:00:00"
 DEFAULT_HEALTH_ENABLED: Final = True
+DEFAULT_HOME_ENTITY: Final = ""
+DEFAULT_HOME_AWAY_DELAY: Final = 0  # seconds; 0 = apply as soon as the entity says away
 DEFAULT_SLEEP_CONFIDENCE_THRESHOLD: Final = 75
 SLEEP_PRESENCE_HALF_LIFE: Final = (
     7200  # 2 hour half-life for sleep (persistent presence)
@@ -567,6 +571,7 @@ def get_sensor_type_mapping() -> dict[str, Any]:
 # Fields that use DurationSelector and need conversion.
 DURATION_FIELDS: Final[set[str]] = {
     CONF_DECAY_HALF_LIFE,
+    CONF_HOME_AWAY_DELAY,
     CONF_MOTION_TIMEOUT,
     CONF_WASP_MAX_DURATION,
     CONF_WASP_MOTION_TIMEOUT,

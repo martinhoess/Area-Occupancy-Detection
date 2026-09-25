@@ -21,3 +21,44 @@ purge_area_history:
       required: true
       selector:
         area: {}
+
+set_override:
+  name: Set Override
+  description: >-
+    Force a single area to report occupied or clear, overriding the sensor
+    calculation, or hand it back to the sensors. The override is never written
+    to disk: restarting Home Assistant returns the area to automatic. It does
+    not affect learning, which reads sensor history rather than this
+    integration's own output.
+  fields:
+    area_id:
+      name: Area
+      description: The Home Assistant area_id to override.
+      required: true
+      selector:
+        area: {}
+    state:
+      name: State
+      description: >-
+        "clear" forces the area to report free, "occupied" forces it to report
+        detected, "auto" hands it back to the sensor calculation.
+      required: true
+      default: auto
+      selector:
+        select:
+          options:
+            - clear
+            - occupied
+            - auto
+    duration:
+      name: Duration
+      description: >-
+        Seconds after which the area returns to automatic on its own. Without
+        it the override holds until something clears it.
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 86400
+          unit_of_measurement: s
+          mode: box

@@ -857,12 +857,16 @@
                     "sleep_start": "Sleep Start Time",
                     "sleep_end": "Sleep End Time",
                     "health_enabled": "Sensor health monitoring",
+                    "home_entity": "Home entity (nobody home forces every area clear)",
+                    "home_away_delay": "Grace period before an empty home counts",
                     "sensor_precision": "Sensor state precision (decimals)"
                 },
                 "data_description": {
                     "sleep_start": "The time when your sleep schedule begins. Areas with the 'Sleeping' purpose will use their configured decay half-life during this period.",
                     "sleep_end": "The time when your sleep schedule ends. Areas with the 'Sleeping' purpose will behave like 'Relaxing' areas outside of sleep hours.",
                     "health_enabled": "When enabled, the integration raises Home Assistant repair issues for stuck, unavailable, or never-triggered sensors and for slow or failing analysis cycles. Turn off to silence all repairs from this integration; previously raised issues will be cleared on the next analysis cycle.",
+                    "home_entity": "Optional. While this entity reports that nobody is home, every area is forced clear, whatever its sensors say. Accepts a binary sensor or input boolean (on = someone home), a person or device tracker (anything but 'home' counts as away, including a named zone such as 'Work'), zone.home, or any entity carrying a head count. Only zone.home is evaluated; another zone decides nothing. An unknown or unavailable entity forces nothing, so a broken sensor cannot black out the house. Leave empty to disable.",
+                    "home_away_delay": "How long the home entity must report an empty home before every area is forced clear. Absorbs a tracker flapping at a zone edge: leave and return within this window and nothing is forced. Zero applies the veto as soon as the entity says away. Coming back always lifts it at once — the area then stays clear until one of its own sensors switches on again, because whatever was still on or fading while the house was empty proves nothing; a leftover that drops out and comes back counts as new. The latch also ends on its own once none of the leftovers is on and nothing is still fading.",
                     "sensor_precision": "Lower values significantly reduce recorder database writes from diagnostic sensors. 0 is recommended unless you need sub-percent resolution."
                 }
             },

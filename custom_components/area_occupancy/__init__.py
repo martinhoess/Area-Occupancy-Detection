@@ -550,4 +550,8 @@ async def _async_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
                 await area.entities.cleanup()
             except Exception:
                 _LOGGER.exception("Failed to update config for area %s", area_name)
+        # The home entity is tracked alongside the area sensors, so a newly
+        # entered one needs the listener rebuilt — otherwise it stays unheard
+        # until the next restart.
+        await coordinator.track_entity_state_changes(coordinator.tracked_entity_ids())
         await coordinator.async_request_refresh()

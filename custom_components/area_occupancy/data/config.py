@@ -32,6 +32,8 @@ from ..const import (
     CONF_DOOR_SENSORS,
     CONF_EXCLUDE_FROM_ALL_AREAS,
     CONF_HEALTH_ENABLED,
+    CONF_HOME_AWAY_DELAY,
+    CONF_HOME_ENTITY,
     CONF_HUMIDITY_SENSORS,
     CONF_ILLUMINANCE_SENSORS,
     CONF_LOCK_ACTIVE_STATE,
@@ -88,6 +90,8 @@ from ..const import (
     DEFAULT_DOOR_ACTIVE_STATE,
     DEFAULT_EXCLUDE_FROM_ALL_AREAS,
     DEFAULT_HEALTH_ENABLED,
+    DEFAULT_HOME_AWAY_DELAY,
+    DEFAULT_HOME_ENTITY,
     DEFAULT_LOCK_ACTIVE_STATE,
     DEFAULT_MEDIA_ACTIVE_STATES,
     DEFAULT_MIN_PRIOR_OVERRIDE,
@@ -206,6 +210,36 @@ class IntegrationConfig:
         return bool(
             self.config_entry.options.get(CONF_HEALTH_ENABLED, DEFAULT_HEALTH_ENABLED)
         )
+
+    @property
+    def home_entity(self) -> str:
+        """Entity that reports whether anyone is home at all.
+
+        While it reports an empty home, every area is forced clear — no
+        sensor can outvote an empty house. Accepts a binary_sensor or
+        input_boolean (on = someone home), a person or device_tracker, or
+        zone.home. Empty disables the check.
+        """
+        return str(
+            self.config_entry.options.get(CONF_HOME_ENTITY, DEFAULT_HOME_ENTITY) or ""
+        )
+
+    @property
+    def home_away_delay(self) -> int:
+        """Seconds the home entity must report an empty home before the veto applies.
+
+        Absorbs zone-edge flapping: a tracker that flips to away and back
+        within the delay never forces anything. 0 applies it immediately.
+        """
+        try:
+            delay = int(
+                self.config_entry.options.get(
+                    CONF_HOME_AWAY_DELAY, DEFAULT_HOME_AWAY_DELAY
+                )
+            )
+        except (ValueError, TypeError, OverflowError):
+            return DEFAULT_HOME_AWAY_DELAY
+        return max(0, delay)
 
     @property
     def sensor_precision(self) -> int:

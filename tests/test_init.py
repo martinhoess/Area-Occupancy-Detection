@@ -515,6 +515,8 @@ class TestEntryUpdated:
         """Set up coordinator mock with areas matching the given area IDs."""
         mock_coordinator = Mock()
         mock_coordinator.async_request_refresh = AsyncMock()
+        mock_coordinator.tracked_entity_ids = Mock(return_value=[])
+        mock_coordinator.track_entity_state_changes = AsyncMock()
         mock_config_entry.runtime_data = mock_coordinator
 
         # Build areas dict with mock Area objects
@@ -564,6 +566,8 @@ class TestEntryUpdated:
         for area in mock_coordinator.areas.values():
             area.config.update_from_entry.assert_called_once_with(mock_config_entry)
             area.entities.cleanup.assert_awaited_once()
+        # A newly entered home entity is only heard once the listener is rebuilt.
+        mock_coordinator.track_entity_state_changes.assert_awaited_once()
         mock_coordinator.async_request_refresh.assert_called_once()
 
     async def test_area_added_triggers_reload(

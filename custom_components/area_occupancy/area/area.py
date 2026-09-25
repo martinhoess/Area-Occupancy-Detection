@@ -17,6 +17,7 @@ from ..const import (
     DEVICE_MODEL,
     DEVICE_SW_VERSION,
     DOMAIN,
+    MAX_PROBABILITY,
     MIN_PROBABILITY,
 )
 from ..data.activity import ActivityId, DetectedActivity, detect_activity
@@ -31,6 +32,8 @@ from ..utils import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from ..coordinator import AreaOccupancyCoordinator
     from ..data.config import AreaConfig
     from ..data.entity import EntityFactory, EntityManager
@@ -128,6 +131,19 @@ class Area:
         self.occupancy_entity_id: str | None = None
         self.wasp_entity_id: str | None = None
         self.sleep_entity_id: str | None = None
+
+        # Manual override from the set_override service; None means the
+        # sensors decide. Deliberately not restored across restarts, so a
+        # forgotten override cannot outlive a reboot.
+        self.override: bool | None = None
+        self.override_cancel: Callable[[], None] | None = None
+
+        # Sticky clear after a veto: the entity IDs that have not been plainly
+        # off since the veto lifted. They are stale by definition — they were
+        # on, or unreadable, while the house was empty — so they must not put
+        # the area straight back to occupied. None means no latch.
+        self._stale_evidence: set[str] | None = None
+        self._veto_was_active = False
 
         # Activity detection cache
         self._activity_cache: DetectedActivity | None = None
@@ -258,6 +274,10 @@ class Area:
         Returns:
             Probability value (0.0-1.0)
         """
+        forced = self.forced_probability()
+        if forced is not None:
+            return forced
+
         base = self._base_probability()
         is_occupied = base >= self.config.threshold
 
@@ -274,6 +294,115 @@ class Area:
         if boost is not None:
             result = apply_logit_boost(result, boost)
         return result
+
+    def forced_state(self) -> bool | None:
+        """Return an overriding occupancy decision, or None for the sensors.
+
+        Two overrides exist, service first: a ``set_override`` call wins, so
+        a deliberate manual decision is never silently undone by the home
+        check. Otherwise, while the configured home entity reports that
+        nobody is home at all, the area is forced clear.
+
+        Sits above the whole calculation on purpose. Nothing here reaches the
+        learning pipeline, which reads sensor history rather than this
+        integration's own output.
+
+        Returns:
+            True or False to force the decision, None to let the sensors decide
+        """
+        if self.override is not None:
+            self._stale_evidence = None
+            self._veto_was_active = False
+            return self.override
+
+        if self.coordinator.home_veto_active:
+            self._veto_was_active = True
+            self._stale_evidence = None
+            return False
+
+        if self._veto_was_active:
+            # The veto just lifted. Whatever is on right now was already on
+            # while the house was empty, so it proves nothing, and whatever is
+            # still fading is left over from before as well. So is an entity
+            # that is unavailable right now: what it reports on its return was
+            # picked up while nobody was home.
+            self._veto_was_active = False
+            evidence, fading = self._latch_evidence()
+            leftovers = {
+                entity_id for entity_id, value in evidence.items() if value is not False
+            }
+            self._stale_evidence = leftovers if leftovers or fading else None
+
+        if self._stale_evidence is not None:
+            evidence, fading = self._latch_evidence()
+            on = {entity_id for entity_id, value in evidence.items() if value is True}
+            if on - self._stale_evidence:
+                # Something is on that has not been left over since the veto
+                # lifted, including a leftover that went off and came back
+                # while still fading: real evidence.
+                self._stale_evidence = None
+                return None
+            # Only a plain off clears a leftover, so switching back on counts as
+            # new. An outage is not an off: the same state coming back after
+            # one proves nothing. Hold while a leftover is on or anything still
+            # fades: that contribution is stale too, and ending the latch before
+            # it has faded would flip the area to occupied.
+            self._stale_evidence -= {
+                entity_id for entity_id, value in evidence.items() if value is False
+            }
+            if self._stale_evidence & on or fading:
+                return False
+            # Nothing left to suppress right now. Leftovers that are merely
+            # unavailable stay remembered without forcing anything, so one
+            # returning after an outage longer than its decay is still stale.
+            if not self._stale_evidence:
+                self._stale_evidence = None
+
+        return None
+
+    def _latch_evidence(self) -> tuple[dict[str, bool | None], bool]:
+        """Return each entity's evidence, and whether any decay still contributes.
+
+        Deliberately not ``active_entities``: that counts a fading entity as
+        active, so a leftover that went off and came back within its decay
+        would never register as new. Fading goes by the factor rather than
+        ``is_decaying`` alone, because the decay tick only resets that flag in
+        areas with decay enabled.
+
+        Returns:
+            Evidence by entity ID (None while unavailable), and True while a
+            decay still adds to the probability; nothing when the manager is
+            unavailable
+        """
+        try:
+            entities = list(self.entities.entities.values())
+        except (AttributeError, KeyError, TypeError):
+            return {}, False
+        evidence = {e.entity_id: e.evidence for e in entities}
+        fading = any(e.decay.is_decaying and e.decay.decay_factor > 0 for e in entities)
+        return evidence, fading
+
+    def forced_probability(self) -> float | None:
+        """Return the probability a forced decision reports, if any.
+
+        Returns:
+            A forced probability, or None to run the normal calculation
+        """
+        forced = self.forced_state()
+        if forced is None:
+            return None
+        return MAX_PROBABILITY if forced else MIN_PROBABILITY
+
+    def cancel_override_timer(self) -> None:
+        """Drop a pending auto-revert for this area.
+
+        Lives here rather than in the service so coordinator shutdown can
+        reach it: a timer that outlives its area would later fire against a
+        replaced one.
+        """
+        if self.override_cancel is not None:
+            self.override_cancel()
+            self.override_cancel = None
 
     def presence_probability(self) -> float:
         """Calculate presence probability from strong binary indicators.
@@ -360,6 +489,12 @@ class Area:
         Returns:
             True if occupied, False otherwise
         """
+        forced = self.forced_state()
+        if forced is not None:
+            # Not via probability(): thresholds reach 1 and 100, where
+            # MIN_PROBABILITY >= threshold and MAX_PROBABILITY < threshold
+            # would both invert the forced answer.
+            return forced
         return self.probability() >= self.config.threshold
 
     def detected_activity(self) -> DetectedActivity:
@@ -371,6 +506,12 @@ class Area:
         Returns:
             DetectedActivity with activity_id, confidence, and matching indicators.
         """
+        if self.forced_state() is False:
+            # detect_activity() runs off the raw sensor probability, so
+            # without this the activity sensor would still report "working"
+            # in a house the veto just emptied.
+            return DetectedActivity(activity_id=ActivityId.UNOCCUPIED, confidence=0.0)
+
         active_ids = frozenset(e.entity_id for e in self.entities.active_entities)
         base = self._base_probability()
         prob = round(base, 4)

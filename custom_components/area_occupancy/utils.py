@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -19,6 +19,57 @@ _LOGGER = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from .coordinator import AreaOccupancyCoordinator
     from .data.entity import Entity
+
+
+# States meaning "nobody is home" for a binary_sensor, an input_boolean or
+# any other entity that is not a tracker: person and device_tracker are
+# handled separately because they report a zone *name* while someone is in
+# one ("work", "town"), not "not_home".
+_AWAY_STATES: Final[frozenset[str]] = frozenset({"off", "not_home", "away", "false"})
+_UNDECIDED_STATES: Final[frozenset[str]] = frozenset({"unknown", "unavailable", ""})
+_TRACKER_DOMAINS: Final[frozenset[str]] = frozenset({"device_tracker", "person"})
+
+
+def nobody_home(hass: HomeAssistant, entity_id: str | None) -> bool:
+    """Return True only when ``entity_id`` definitively reports an empty home.
+
+    Fails open. An unset, missing, unknown or unavailable entity returns
+    False, so a broken sensor can never force every area clear.
+
+    Accepts a tracker (``person``/``device_tracker``: anything but ``home``
+    counts as away, including a named zone), ``zone.home`` and any other
+    entity carrying a head count, or a plain on/off entity where ``on``
+    means someone is home. Any zone other than ``zone.home`` decides
+    nothing — an empty "school" zone says nothing about this house.
+
+    Args:
+        hass: Home Assistant instance
+        entity_id: The configured home entity, or empty when unconfigured
+
+    Returns:
+        True when the entity reports that nobody is home
+    """
+    if not entity_id:
+        return False
+    state = hass.states.get(entity_id)
+    if state is None:
+        return False
+    value = state.state.strip().lower()
+    if value in _UNDECIDED_STATES:
+        return False
+
+    domain = entity_id.split(".", 1)[0]
+    if domain in _TRACKER_DOMAINS:
+        return value != "home"
+    if domain == "zone" and entity_id != "zone.home":
+        return False
+
+    if value in _AWAY_STATES:
+        return True
+    try:
+        return float(value) == 0.0  # zone.home and other head counts
+    except ValueError:
+        return False
 
 
 def assign_device_to_ha_area(

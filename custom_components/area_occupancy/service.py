@@ -12,6 +12,7 @@ import voluptuous as vol
 
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
 
 from .const import CONF_AREA_ID, DEVICE_SW_VERSION, DOMAIN
@@ -27,6 +28,21 @@ _LOGGER = logging.getLogger(__name__)
 PURGE_AREA_HISTORY_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_AREA_ID): vol.All(str, vol.Length(min=1)),
+    }
+)
+
+# Maps the service's ``state`` option onto ``Area.override``.
+_OVERRIDE_STATES: dict[str, bool | None] = {
+    "clear": False,
+    "occupied": True,
+    "auto": None,
+}
+
+SET_OVERRIDE_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_AREA_ID): vol.All(str, vol.Length(min=1)),
+        vol.Required("state"): vol.In(sorted(_OVERRIDE_STATES)),
+        vol.Optional("duration"): vol.All(vol.Coerce(int), vol.Range(min=1, max=86400)),
     }
 )
 
@@ -354,6 +370,65 @@ async def _purge_area_history(hass: HomeAssistant, call: ServiceCall) -> dict[st
     return await async_purge_area_data(hass, coordinator, area_name, area)
 
 
+async def _set_override(hass: HomeAssistant, call: ServiceCall) -> dict[str, Any]:
+    """Service handler: force one area occupied or clear, or hand it back.
+
+    The override sits above the sensor calculation and is never written to
+    disk, so a restart returns the area to automatic. ``duration`` adds an
+    auto-revert, which is the difference between an escape hatch and a trap.
+    """
+    coordinator = get_coordinator(hass)
+    area_id = call.data[CONF_AREA_ID]
+    wanted: str = call.data["state"]
+    duration: int | None = call.data.get("duration")
+
+    area_name, area = _find_area_by_area_id(coordinator, area_id)
+    if area_name is None or area is None:
+        known = sorted(
+            a.config.area_id
+            for a in coordinator.areas.values()
+            if isinstance(a.config.area_id, str)
+        )
+        raise ServiceValidationError(
+            f"No configured area found for area_id '{area_id}'. "
+            f"Known area_ids: {', '.join(known) if known else '(none)'}"
+        )
+
+    # Without this a second call would leave the first timer running, and
+    # it would later undo the decision just made.
+    area.cancel_override_timer()
+    area.override = _OVERRIDE_STATES[wanted]
+
+    if area.override is not None and duration is not None:
+
+        async def _revert(_now: Any) -> None:
+            area.override = None
+            area.override_cancel = None
+            with contextlib.suppress(HomeAssistantError):
+                await get_coordinator(hass).async_refresh()
+
+        area.override_cancel = async_call_later(hass, duration, _revert)
+
+    _LOGGER.info(
+        "Area '%s' (area_id=%s) set to '%s'%s on user request",
+        area_name,
+        area_id,
+        wanted,
+        f" for {duration}s" if duration else "",
+    )
+
+    await coordinator.async_refresh()
+
+    return {
+        "area_id": area_id,
+        "area_name": area_name,
+        "state": wanted,
+        "expires_in": duration if area.override is not None else None,
+        "probability": area.probability(),
+        "occupied": area.occupied(),
+    }
+
+
 async def async_setup_services(hass: HomeAssistant) -> None:
     """Register custom services for area occupancy."""
 
@@ -366,6 +441,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def handle_purge_area_history(call: ServiceCall) -> dict[str, Any]:
         return await _purge_area_history(hass, call)
+
+    async def handle_set_override(call: ServiceCall) -> dict[str, Any]:
+        return await _set_override(hass, call)
 
     # Register service with async wrapper function
     hass.services.async_register(
@@ -392,6 +470,14 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         supports_response=SupportsResponse.OPTIONAL,
     )
 
+    hass.services.async_register(
+        DOMAIN,
+        "set_override",
+        handle_set_override,
+        schema=SET_OVERRIDE_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
 
 def async_unload_services(hass: HomeAssistant) -> None:
     """Remove the domain services.
@@ -399,5 +485,10 @@ def async_unload_services(hass: HomeAssistant) -> None:
     Called when the last config entry unloads; otherwise the handlers
     linger and raise once the coordinator is gone.
     """
-    for service in ("run_analysis", "export_config", "purge_area_history"):
+    for service in (
+        "run_analysis",
+        "export_config",
+        "purge_area_history",
+        "set_override",
+    ):
         hass.services.async_remove(DOMAIN, service)

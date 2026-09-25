@@ -228,6 +228,10 @@ class ProbabilitySensor(AreaOccupancySensorBase):
             **snapshot,
             "active_entities": active_entities,
             "decaying_entities": decaying_entities,
+            # Without these, a forced area shows an empty evidence list and a
+            # prior far from the reported state, and nothing explains why.
+            "override": area.override,
+            "forced_state": area.forced_state(),
         }
 
 

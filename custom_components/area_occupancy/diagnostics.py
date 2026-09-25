@@ -254,6 +254,8 @@ def _area_snapshot(
             "active_entity_count": len(area.entities.active_entities),
             "decaying_entity_count": len(area.entities.decaying_entities),
             "entity_count": len(area.entities.entities),
+            "override": area.override,
+            "forced_state": area.forced_state(),
         }
         adjacency = _adjacency_snapshot(coordinator, area_name)
         if adjacency:
