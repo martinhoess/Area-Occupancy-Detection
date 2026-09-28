@@ -21,6 +21,7 @@ from homeassistant.helpers import (
     floor_registry as fr,
 )
 from homeassistant.helpers.event import (
+    async_call_later,
     async_track_point_in_time,
     async_track_state_change_event,
 )
@@ -60,7 +61,7 @@ from .data.trajectory import TrajectoryTracker
 from .db import AreaOccupancyDB
 from .db.transitions import AdjacencySnapshot, load_adjacency_snapshot
 from .time_utils import to_local
-from .utils import evidence_value, format_area_names, logit
+from .utils import evidence_value, format_area_names, logit, nobody_home
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -133,6 +134,11 @@ class AreaOccupancyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # per-entity loops in db.correlation.
         self._stop_requested: bool = False
         self._stop_listener_remove: CALLBACK_TYPE | None = None
+
+        # Home veto: when the home entity first reported an empty home, and
+        # the pending re-check that makes the delay take effect on its own.
+        self._home_away_since: datetime | None = None
+        self._home_veto_timer: CALLBACK_TYPE | None = None
 
         # Adjacent-areas Phase 4 runtime state. The trajectory tracker
         # records area-end edges across the household so the per-area
@@ -557,13 +563,12 @@ class AreaOccupancyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self.async_load_adjacency_snapshot()
 
             # Track entity state changes for all areas
-            all_entity_ids = []
-            for area in self.areas.values():
-                all_entity_ids.extend(area.entities.entity_ids)
+            await self.track_entity_state_changes(self.tracked_entity_ids())
 
-            # Remove duplicates
-            all_entity_ids = list(set(all_entity_ids))
-            await self.track_entity_state_changes(all_entity_ids)
+            # Starting while nobody is home restarts the away clock. The home
+            # entity will not change again to arm the re-check, so arm it here.
+            if not self.home_veto_active:
+                self._schedule_home_veto_recheck()
 
             # Start timers only after everything is ready
             self._start_decay_timer()
@@ -676,6 +681,13 @@ class AreaOccupancyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ``_handle_decay_timer``) has no effect on entity state or the
         production refresh cadence.
         """
+        # The accuracy metrics grade the model against sensor-derived ground
+        # truth, so a forced area records what its sensors alone say. Skipping
+        # the sample instead would hand the whole forced stretch to the last
+        # tick before it, as each tick is weighted by the gap to the next.
+        if area.forced_state() is not None:
+            probability = area.probability(allow_forced=False)
+            is_occupied = probability >= area.threshold()
         self._accuracy_ticks.setdefault(
             area_name, deque(maxlen=ACCURACY_TICK_BUFFER_MAXLEN)
         ).append(
@@ -882,6 +894,14 @@ class AreaOccupancyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "Starting coordinator shutdown for areas: %s",
             format_area_names(self),
         )
+
+        # Drop pending override auto-reverts first: a surviving timer would
+        # later fire against an Area object this shutdown is about to replace.
+        for area in self.areas.values():
+            area.cancel_override_timer()
+        if self._home_veto_timer is not None:
+            self._home_veto_timer()
+            self._home_veto_timer = None
 
         # Mark stop requested so any analysis run that races shutdown bails
         # at the next loop boundary. Idempotent with the EVENT_HOMEASSISTANT_STOP
@@ -1358,13 +1378,7 @@ class AreaOccupancyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._reconcile_entity_state()
 
         # Re-establish entity state tracking with new entity lists
-        all_entity_ids = []
-        for area in self.areas.values():
-            all_entity_ids.extend(area.entities.entity_ids)
-
-        # Remove duplicates
-        all_entity_ids = list(set(all_entity_ids))
-        await self.track_entity_state_changes(all_entity_ids)
+        await self.track_entity_state_changes(self.tracked_entity_ids())
 
         # Rebuild floor-based aggregators for updated areas
         self._build_floor_aggregators()
@@ -1380,6 +1394,73 @@ class AreaOccupancyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self.async_request_refresh()
 
     # --- Entity State Tracking ---
+    @property
+    def home_veto_active(self) -> bool:
+        """Return whether an empty home currently forces every area clear.
+
+        Owned by the coordinator rather than each Area: there is one home
+        entity, and the "how long has it said away" clock has to be shared.
+        The clock starts lazily at the first check, so after a restart while
+        nobody is home the veto applies again once the delay has passed;
+        setup() arms the re-check for that.
+
+        Returns:
+            True while the veto applies
+        """
+        if not nobody_home(self.hass, self.integration_config.home_entity):
+            self._home_away_since = None
+            return False
+
+        if self._home_away_since is None:
+            self._home_away_since = dt_util.utcnow()
+
+        delay = self.integration_config.home_away_delay
+        if delay <= 0:
+            return True
+        return (dt_util.utcnow() - self._home_away_since).total_seconds() >= delay
+
+    def tracked_entity_ids(self) -> list[str]:
+        """Return every entity whose state change must trigger a refresh.
+
+        The global home entity joins the per-area sensors here rather than at
+        each call site: a home check that nothing listens to would only take
+        effect at the next decay tick.
+
+        Returns:
+            Sorted, de-duplicated list of entity IDs
+        """
+        entity_ids = {
+            entity_id
+            for area in self.areas.values()
+            for entity_id in area.entities.entity_ids
+        }
+        if home_entity := self.integration_config.home_entity:
+            entity_ids.add(home_entity)
+        return sorted(entity_ids)
+
+    def _schedule_home_veto_recheck(self) -> None:
+        """Re-check the veto once the away delay has elapsed.
+
+        Nothing else would: the home entity has already changed, so no
+        further state event is coming, and without decay there is no tick
+        either. Without this the delay would silently become "until the next
+        sensor happens to move".
+        """
+        if self._home_veto_timer is not None:
+            self._home_veto_timer()
+            self._home_veto_timer = None
+
+        delay = self.integration_config.home_away_delay
+        if delay <= 0 or self._home_away_since is None:
+            return
+
+        async def _recheck(_now: Any) -> None:
+            self._home_veto_timer = None
+            if self.setup_complete:
+                await self.async_refresh()
+
+        self._home_veto_timer = async_call_later(self.hass, delay + 1, _recheck)
+
     async def track_entity_state_changes(self, entity_ids: list[str]) -> None:
         """Track state changes for a list of entity_ids across all areas."""
         # Clean up existing listeners
@@ -1393,6 +1474,15 @@ class AreaOccupancyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             async def _refresh_on_state_change(event: Any) -> None:
                 entity_id = event.data.get("entity_id")
                 if not entity_id:
+                    return
+
+                # The home entity belongs to no area, so the evidence check
+                # below would never fire for it and the veto would only take
+                # effect at the next decay tick.
+                if entity_id == self.integration_config.home_entity:
+                    if self.setup_complete:
+                        await self.async_refresh()
+                    self._schedule_home_veto_recheck()
                     return
 
                 # Find which area(s) this entity belongs to
