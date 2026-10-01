@@ -38,7 +38,7 @@ FRONTEND_REGISTERED_KEY: Final = f"{DOMAIN}_frontend_registered"
 # Device information
 DEVICE_MANUFACTURER: Final = "Hankanman"
 DEVICE_MODEL: Final = "Area Occupancy Detector"
-DEVICE_SW_VERSION: Final = "2026.9.4"
+DEVICE_SW_VERSION: Final = "2026.9.104"
 # Config entry format. v19 moves each area out of the legacy CONF_AREAS list
 # into its own config subentry (see migrations.py). Bumping this no longer
 # costs anyone their learned history -- that is what DB_SCHEMA_VERSION below
@@ -136,6 +136,9 @@ CONF_HEALTH_ENABLED: Final = "health_enabled"
 # Optional boolean entity that is on while the household is away (#485). Set,
 # it replaces person tracking and ``zone.home`` as the source for away mode.
 CONF_AWAY_MODE_ENTITY: Final = "away_mode_entity"
+# Fork: global entity that reports whether anyone is home at all (on = home).
+CONF_HOME_ENTITY: Final = "home_entity"
+CONF_HOME_AWAY_DELAY: Final = "home_away_delay"
 
 # People configuration constants
 CONF_PEOPLE: Final = "people"
@@ -188,6 +191,8 @@ DEFAULT_EXCLUDE_FROM_ALL_AREAS: Final = False
 DEFAULT_SLEEP_START: Final = "23:00:00"
 DEFAULT_SLEEP_END: Final = "07:00:00"
 DEFAULT_HEALTH_ENABLED: Final = True
+DEFAULT_HOME_ENTITY: Final = ""
+DEFAULT_HOME_AWAY_DELAY: Final = 0  # seconds; 0 = apply as soon as the entity says away
 DEFAULT_SLEEP_CONFIDENCE_THRESHOLD: Final = 75
 SLEEP_PRESENCE_HALF_LIFE: Final = (
     7200  # 2 hour half-life for sleep (persistent presence)
