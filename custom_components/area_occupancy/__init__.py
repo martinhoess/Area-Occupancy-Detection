@@ -678,16 +678,9 @@ async def _async_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
         # with its live state so its first change is a real transition (an
         # active sensor that goes quiet then decays instead of dropping).
         coordinator._reconcile_entity_state()  # noqa: SLF001
-        # A sensor added to an existing area needs a state listener too;
-        # without one it only counted when something else refreshed.
-        await coordinator.track_entity_state_changes(
-            sorted(
-                {
-                    entity_id
-                    for area in coordinator.areas.values()
-                    for entity_id in area.entities.entity_ids
-                }
-            )
-        )
+        # A sensor added to an existing area, or a newly entered home
+        # entity, needs a state listener too; without one it only counted
+        # when something else refreshed.
+        await coordinator.track_entity_state_changes(coordinator.tracked_entity_ids())
         await coordinator.async_request_refresh()
         _async_sync_wasp_deprecation_issue(hass, coordinator)

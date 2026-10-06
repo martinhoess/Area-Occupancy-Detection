@@ -70,6 +70,7 @@ from .config_helpers import (
     WEIGHT_MIN,
     WEIGHT_STEP,
     apply_purpose_based_decay_default,
+    duration_to_seconds,
     find_area_by_id,
     find_area_subentry_id,
     flatten_sectioned_input,
@@ -108,6 +109,8 @@ from .const import (
     CONF_DOOR_SENSORS,
     CONF_EXCLUDE_FROM_ALL_AREAS,
     CONF_HEALTH_ENABLED,
+    CONF_HOME_AWAY_DELAY,
+    CONF_HOME_ENTITY,
     CONF_HUMIDITY_SENSORS,
     CONF_ILLUMINANCE_SENSORS,
     CONF_LOCK_ACTIVE_STATE,
@@ -169,6 +172,8 @@ from .const import (
     DEFAULT_DECAY_HALF_LIFE,
     DEFAULT_EXCLUDE_FROM_ALL_AREAS,
     DEFAULT_HEALTH_ENABLED,
+    DEFAULT_HOME_AWAY_DELAY,
+    DEFAULT_HOME_ENTITY,
     DEFAULT_MEDIA_ACTIVE_STATES,
     DEFAULT_MIN_PRIOR_OVERRIDE,
     DEFAULT_MOTION_PROB_GIVEN_FALSE,
@@ -1806,6 +1811,33 @@ def _create_global_settings_schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_HEALTH_ENABLED,
                 default=defaults.get(CONF_HEALTH_ENABLED, DEFAULT_HEALTH_ENABLED),
             ): BooleanSelector(),
+            vol.Optional(
+                CONF_HOME_ENTITY,
+                description={
+                    "suggested_value": defaults.get(
+                        CONF_HOME_ENTITY, DEFAULT_HOME_ENTITY
+                    )
+                    or None
+                },
+            ): EntitySelector(
+                EntitySelectorConfig(
+                    domain=[
+                        "binary_sensor",
+                        "device_tracker",
+                        "input_boolean",
+                        "person",
+                        "zone",
+                    ]
+                )
+            ),
+            vol.Required(
+                CONF_HOME_AWAY_DELAY,
+                default=seconds_to_duration(
+                    duration_to_seconds(
+                        defaults.get(CONF_HOME_AWAY_DELAY, DEFAULT_HOME_AWAY_DELAY)
+                    )
+                ),
+            ): DurationSelector(),
             vol.Required(
                 CONF_SENSOR_PRECISION,
                 default=defaults.get(CONF_SENSOR_PRECISION, DEFAULT_SENSOR_PRECISION),
@@ -3189,6 +3221,14 @@ class AreaOccupancyOptionsFlow(OptionsFlow, BaseOccupancyFlow):
             # cannot remove a key, so the old value would come back.
             if CONF_AWAY_MODE_ENTITY not in user_input:
                 new_options.pop(CONF_AWAY_MODE_ENTITY, None)
+            # Explicit, because an emptied entity field is simply absent from
+            # user_input and update() would keep the old value forever.
+            new_options[CONF_HOME_ENTITY] = user_input.get(
+                CONF_HOME_ENTITY, DEFAULT_HOME_ENTITY
+            )
+            new_options[CONF_HOME_AWAY_DELAY] = duration_to_seconds(
+                user_input.get(CONF_HOME_AWAY_DELAY, DEFAULT_HOME_AWAY_DELAY)
+            )
 
             return self.async_create_entry(title="", data=new_options)
 
@@ -3207,6 +3247,12 @@ class AreaOccupancyOptionsFlow(OptionsFlow, BaseOccupancyFlow):
                 CONF_SENSOR_PRECISION, DEFAULT_SENSOR_PRECISION
             ),
             CONF_AWAY_MODE_ENTITY: self.config_entry.options.get(CONF_AWAY_MODE_ENTITY),
+            CONF_HOME_ENTITY: self.config_entry.options.get(
+                CONF_HOME_ENTITY, DEFAULT_HOME_ENTITY
+            ),
+            CONF_HOME_AWAY_DELAY: self.config_entry.options.get(
+                CONF_HOME_AWAY_DELAY, DEFAULT_HOME_AWAY_DELAY
+            ),
         }
 
         return self.async_show_form(

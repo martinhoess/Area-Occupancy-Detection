@@ -642,8 +642,9 @@ class TestEntryUpdated:
             area.entities.cleanup.assert_not_awaited()
         # New sensors are reconciled with their live state, then heard.
         mock_coordinator._reconcile_entity_state.assert_called_once_with()  # noqa: SLF001
+        # The listener set comes from the coordinator, which adds the home entity.
         mock_coordinator.track_entity_state_changes.assert_awaited_once_with(
-            ["binary_sensor.test_area_motion"]
+            mock_coordinator.tracked_entity_ids.return_value
         )
         mock_coordinator.async_request_refresh.assert_called_once()
 
