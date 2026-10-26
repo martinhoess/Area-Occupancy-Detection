@@ -124,10 +124,41 @@ def test_active_entity_turning_unavailable_is_no_longer_active() -> None:
     assert asleep(q, 20)  # quiet counts from the last real change at 0
 
 
-def test_assume_asleep_after_restart() -> None:
+def test_restore_after_restart_with_tracker_ready() -> None:
     q = tracker()
     q.room_changed(at(0), "Bedroom")  # last_changed = start time
     q.last_activity = at(0)
     assert not asleep(q, 0)
-    q.assume_asleep(at(0))
+    q.restore(at(0))
     assert asleep(q, 0)
+
+
+def test_restore_waits_for_a_late_tracker() -> None:
+    q = tracker()
+    q.room_changed(at(0), "unavailable")  # tracker not loaded at setup
+    q.restore(at(0))
+    assert asleep(q, 1)
+    q.room_changed(at(2), "Bedroom")
+    assert asleep(q, 3)  # no new room delay, no quiet time
+
+
+def test_restore_ends_when_tracker_reports_another_room() -> None:
+    q = tracker()
+    q.restore(at(0))
+    q.room_changed(at(1), "Livingroom")
+    assert not asleep(q, 2)
+
+
+def test_restore_expires_without_a_report() -> None:
+    q = tracker()
+    q.restore(at(0))
+    assert asleep(q, 5)
+    assert not asleep(q, 6)
+
+
+def test_restore_ends_on_activity() -> None:
+    q = tracker()
+    q.restore(at(0))
+    q.activity_changed("light.hall", at(1), "off", "on")
+    q.activity_changed("light.hall", at(2), "on", "off")
+    assert not asleep(q, 3)

@@ -13,6 +13,8 @@ from datetime import datetime, time, timedelta
 
 # Short drop-outs of the room tracker (a scan gap, a hop to the next room) do not end the stay.
 ROOM_GAP = timedelta(minutes=2)
+# After a restart the room tracker may report only after setup; a restored sleep waits this long for it.
+RESTORE_HOLD = timedelta(minutes=5)
 ACTIVE_STATES = frozenset({"on", "playing", "paused", "buffering"})
 IGNORED_STATES = frozenset({"unknown", "unavailable", ""})
 
@@ -37,6 +39,7 @@ class QuietSleep:
     room_left: datetime | None = None
     last_activity: datetime | None = None
     active: set[str] = field(default_factory=set)
+    restore_until: datetime | None = None
 
     def room_changed(self, when: datetime, state: str | None) -> None:
         """Room tracker reported ``state`` at ``when``.
@@ -44,6 +47,13 @@ class QuietSleep:
         Unknown or unavailable counts as leaving: a short scan gap is covered by
         ROOM_GAP, a tracker that lost the phone for good ends the stay.
         """
+        if self.restore_until is not None and state not in IGNORED_STATES:
+            # First real report after a restart decides whether the restored sleep holds.
+            pending, self.restore_until = self.restore_until, None
+            if state == self.room_state and when <= pending:
+                self.room_since = when - self.room_delay
+                self.room_left = None
+                return
         if state == self.room_state:
             if self.room_since is None or (
                 self.room_left is not None and when - self.room_left > ROOM_GAP
@@ -69,15 +79,19 @@ class QuietSleep:
         if old is not None and old not in IGNORED_STATES and old != new:
             self.last_activity = max(self.last_activity or when, when)
 
-    def assume_asleep(self, now: datetime) -> None:
-        """Restore a sleep that was on before a restart: room delay and quiet count as passed.
+    def restore(self, now: datetime) -> None:
+        """Keep a sleep that was on before a restart: room delay and quiet count as passed.
 
         Every entity's last_changed is the start time after a restart; without this
         the sensor would drop to off for the quiet time in the middle of the night.
+        If the room tracker has not reported the sleep room yet, the sleep holds for
+        RESTORE_HOLD until its first real report decides.
         """
-        self.room_since = now - self.room_delay
-        self.room_left = None
         self.last_activity = None
+        if self.in_room(now):
+            self.room_since = now - self.room_delay
+        else:
+            self.restore_until = now + RESTORE_HOLD
 
     def in_room(self, now: datetime) -> bool:
         """In the sleep room now; a drop-out up to ROOM_GAP still counts."""
@@ -89,6 +103,10 @@ class QuietSleep:
         """Asleep: in the room for ``room_delay``, nothing active for ``quiet``, inside the window."""
         if not in_window(local, self.start, self.end) or self.active:
             return False
+        if self.restore_until is not None:
+            if now <= self.restore_until:
+                return self.last_activity is None
+            self.restore_until = None  # tracker never confirmed the room
         if self.room_since is None or not self.in_room(now):
             return False
         if now - self.room_since < self.room_delay:

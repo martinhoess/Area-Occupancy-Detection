@@ -3501,6 +3501,12 @@ class AreaOccupancyOptionsFlow(OptionsFlow, BaseOccupancyFlow):
                 else:
                     return result
 
+        own_entities = [
+            entry.entity_id
+            for entry in er.async_entries_for_config_entry(
+                er.async_get(self.hass), self.config_entry.entry_id
+            )
+        ]
         base_schema = vol.Schema(
             {
                 vol.Required(CONF_PERSON_ENTITY): EntitySelector(
@@ -3533,7 +3539,8 @@ class AreaOccupancyOptionsFlow(OptionsFlow, BaseOccupancyFlow):
                 ),
                 vol.Optional(CONF_PERSON_ROOM_STATE): TextSelector(),
                 vol.Optional(CONF_PERSON_ACTIVITY_ENTITIES): EntitySelector(
-                    EntitySelectorConfig(multiple=True)
+                    # Own outputs (sleep presence, area/floor occupancy) would feed back.
+                    EntitySelectorConfig(multiple=True, exclude_entities=own_entities)
                 ),
                 vol.Optional(
                     CONF_PERSON_ROOM_DELAY, default=DEFAULT_PERSON_ROOM_DELAY

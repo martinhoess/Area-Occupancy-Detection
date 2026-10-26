@@ -2610,3 +2610,24 @@ class TestSleepPresenceSensor:
         freezer.tick(timedelta(minutes=20))
         sensor._handle_tick(None)
         sensor.async_write_ha_state.assert_called_once()
+
+    async def test_restored_sleep_waits_for_late_room_tracker(
+        self, hass: HomeAssistant, coordinator: AreaOccupancyCoordinator, freezer
+    ) -> None:
+        """Tracker not ready at setup: the restored sleep holds until it reports."""
+        freezer.move_to("2026-01-11T02:00:00+00:00")
+        person = self._derived_person()
+        hass.states.async_set("person.test", "home")
+        hass.states.async_set("light.hall", STATE_OFF)
+        hass.states.async_set("sensor.phone_area", "unavailable")
+        sensor = self._make_sensor(hass, coordinator, person)
+        sensor.async_write_ha_state = Mock()
+        sensor._state = STATE_ON
+        sensor._init_quiet(person)
+        assert sensor._evaluate_sleep_state() is True
+        freezer.tick(timedelta(minutes=1))
+        sensor._handle_state_change(
+            self._event(hass, "sensor.phone_area", "unavailable", "Bedroom")
+        )
+        freezer.tick(timedelta(minutes=10))
+        assert sensor._evaluate_sleep_state() is True

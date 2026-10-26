@@ -52,7 +52,7 @@ from .const import (
     NAME_SLEEP_PRESENCE,
     NAME_WASP_IN_BOX,
 )
-from .data.quiet_sleep import QuietSleep
+from .data.quiet_sleep import IGNORED_STATES, QuietSleep
 from .utils import assign_device_to_ha_area, generate_entity_unique_id
 
 if TYPE_CHECKING:
@@ -884,16 +884,12 @@ class SleepPresenceSensor(RestoreEntity, BinarySensorEntity):
             if (state := self.hass.states.get(entity_id)) is None:
                 continue
             tracker.activity_changed(entity_id, state.last_changed, None, state.state)
-            if state.state not in ("unknown", "unavailable", ""):
+            if state.state not in IGNORED_STATES:
                 tracker.last_activity = max(
                     tracker.last_activity or state.last_changed, state.last_changed
                 )
-        if (
-            self._state == STATE_ON
-            and room is not None
-            and room.state == person.room_state
-        ):
-            tracker.assume_asleep(dt_util.utcnow())
+        if self._state == STATE_ON:
+            tracker.restore(dt_util.utcnow())
 
     @callback
     def _handle_state_change(self, event: Any) -> None:
@@ -1086,7 +1082,8 @@ class SleepPresenceSensor(RestoreEntity, BinarySensorEntity):
                 ATTR_PERSON_SLEEPING: is_sleeping,
             }
             if (tracker := self._quiet.get(person.person_entity)) is not None:
-                # Only event times, no "now": the attributes change with events, not every tick.
+                # Written only when sleep changes (see _handle_tick), so these show the
+                # state at the last transition, not live: check the entities when debugging.
                 details["derived_sleep"] = {
                     "room_sensor": person.room_sensor,
                     "in_room_since": tracker.room_since.isoformat()
