@@ -31,6 +31,12 @@ Sleep presence is configured through the **Manage People** option in the integra
 | **Sleep Area** | Which area this person sleeps in |
 | **Confidence Threshold** | Minimum value (0-100) for **numeric** sleep sensors to consider the person sleeping. Does not apply to binary sensors. Default: **75** |
 | **Device Tracker** *(optional)* | A specific `device_tracker` entity to use for home/away detection instead of the person entity. When set, this tracker's state is checked instead of `person.<name>`. Leave empty to use the person entity (default). |
+| **Room Tracker** *(optional)* | A sensor reporting the room the person is in, e.g. a Bermuda area sensor. Derives sleep without a sleep sensor, see below. |
+| **Room Tracker State** | The room tracker's state for the sleep area, e.g. `Bedroom`. Required with a room tracker. |
+| **Activity Entities** | Lights, PCs, TVs, motion sensors and the like anywhere in the house. `on`, `playing` or `paused` means active; any change counts as activity. |
+| **Room Delay** | Minutes the room tracker must report the sleep room. Gaps up to 2 minutes are ignored. Default: **5** |
+| **Quiet Time** | Minutes nothing may have been active. Default: **20** |
+| **Night Start / End** | Sleep is only derived inside this window. Default: **21:00–11:00** |
 
 You can add multiple people, each assigned to a different (or the same) sleep area.
 
@@ -39,6 +45,16 @@ You can add multiple people, each assigned to a different (or the same) sleep ar
     - **iOS Sleep Focus**: `binary_sensor.<name>_sleep_focus` (binary)
     - **Withings Sleep Mat**: `binary_sensor.<name>_in_bed` (binary)
     - **Any binary sensor** that turns `on` when sleeping
+
+### Sleep derived from quiet
+
+Without a sleep sensor, a room tracker can stand in: the person counts as asleep while
+the tracker has reported the sleep room for the room delay, nothing in the activity list
+has been active or changed for the quiet time, and the local time is inside the night
+window. A room tracker alone is too noisy (BLE trackers mislocate a phone for minutes);
+requiring a quiet house filters every mislocation while the person is up. Unknown or
+unavailable tracker states count as leaving the room. After a restart, a sleep that was
+on before stays on.
 
 ## Created Entity
 
@@ -70,7 +86,7 @@ This means that when sleep is detected, the area will be held at a high occupanc
 ## Requirements
 
 - Person entities configured in Home Assistant
-- At least one sleep detection sensor per person (Companion App, in-bed sensor, Sleep Focus, etc.)
+- At least one sleep detection sensor per person (Companion App, in-bed sensor, Sleep Focus, etc.), or a room tracker (see *Sleep derived from quiet*)
 - At least one area configured in the integration
 
 ## Tips

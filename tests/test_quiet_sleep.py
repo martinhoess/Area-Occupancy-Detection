@@ -105,8 +105,29 @@ def test_unavailable_transitions_are_no_activity(old: str, new: str) -> None:
     assert asleep(q, 11)
 
 
-def test_unknown_room_state_changes_nothing() -> None:
+def test_short_unknown_is_a_gap_long_unknown_ends_the_stay() -> None:
     q = tracker()
     q.room_changed(at(0), "Bedroom")
     q.room_changed(at(10), "unknown")
-    assert asleep(q, 20)
+    assert asleep(q, 11)
+    assert not asleep(q, 13)  # tracker lost the phone (garden, basement)
+    q.room_changed(at(60), "Bedroom")
+    assert not asleep(q, 61)  # room delay starts over
+
+
+def test_active_entity_turning_unavailable_is_no_longer_active() -> None:
+    q = tracker()
+    q.room_changed(at(0), "Bedroom")
+    q.activity_changed("media_player.tv", at(0), "off", "playing")
+    q.activity_changed("media_player.tv", at(5), "playing", "unavailable")
+    assert not q.active
+    assert asleep(q, 20)  # quiet counts from the last real change at 0
+
+
+def test_assume_asleep_after_restart() -> None:
+    q = tracker()
+    q.room_changed(at(0), "Bedroom")  # last_changed = start time
+    q.last_activity = at(0)
+    assert not asleep(q, 0)
+    q.assume_asleep(at(0))
+    assert asleep(q, 0)

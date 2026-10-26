@@ -39,9 +39,11 @@ class QuietSleep:
     active: set[str] = field(default_factory=set)
 
     def room_changed(self, when: datetime, state: str | None) -> None:
-        """Room tracker reported ``state`` at ``when``."""
-        if state in IGNORED_STATES or state is None:
-            return
+        """Room tracker reported ``state`` at ``when``.
+
+        Unknown or unavailable counts as leaving: a short scan gap is covered by
+        ROOM_GAP, a tracker that lost the phone for good ends the stay.
+        """
         if state == self.room_state:
             if self.room_since is None or (
                 self.room_left is not None and when - self.room_left > ROOM_GAP
@@ -56,6 +58,8 @@ class QuietSleep:
     ) -> None:
         """An activity entity changed; any real change counts as activity."""
         if new in IGNORED_STATES or new is None:
+            # A TV cut at the power strip goes playing -> unavailable: no longer active.
+            self.active.discard(entity_id)
             return
         if new in ACTIVE_STATES:
             self.active.add(entity_id)
@@ -64,6 +68,16 @@ class QuietSleep:
         # Coming back from unavailable (restart, radio drop) is no sign of life.
         if old is not None and old not in IGNORED_STATES and old != new:
             self.last_activity = max(self.last_activity or when, when)
+
+    def assume_asleep(self, now: datetime) -> None:
+        """Restore a sleep that was on before a restart: room delay and quiet count as passed.
+
+        Every entity's last_changed is the start time after a restart; without this
+        the sensor would drop to off for the quiet time in the middle of the night.
+        """
+        self.room_since = now - self.room_delay
+        self.room_left = None
+        self.last_activity = None
 
     def in_room(self, now: datetime) -> bool:
         """In the sleep room now; a drop-out up to ROOM_GAP still counts."""

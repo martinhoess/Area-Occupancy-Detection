@@ -796,6 +796,7 @@ class SleepPresenceSensor(RestoreEntity, BinarySensorEntity):
         self._state = STATE_OFF
         self._remove_state_listener: Callable[[], None] | None = None
         self._remove_tick: Callable[[], None] | None = None
+        self._last_derived: tuple[bool, ...] = ()
         # Sleep derived from quiet, per person entity (only people with a room tracker)
         self._quiet: dict[str, QuietSleep] = {
             p.person_entity: QuietSleep(
@@ -876,7 +877,8 @@ class SleepPresenceSensor(RestoreEntity, BinarySensorEntity):
         quiet time starts over: sleep is derived again only after it passed.
         """
         tracker = self._quiet[person.person_entity]
-        if person.room_sensor and (room := self.hass.states.get(person.room_sensor)):
+        room = self.hass.states.get(person.room_sensor) if person.room_sensor else None
+        if room is not None:
             tracker.room_changed(room.last_changed, room.state)
         for entity_id in person.activity_entities:
             if (state := self.hass.states.get(entity_id)) is None:
@@ -886,47 +888,52 @@ class SleepPresenceSensor(RestoreEntity, BinarySensorEntity):
                 tracker.last_activity = max(
                     tracker.last_activity or state.last_changed, state.last_changed
                 )
+        if (
+            self._state == STATE_ON
+            and room is not None
+            and room.state == person.room_state
+        ):
+            tracker.assume_asleep(dt_util.utcnow())
 
     @callback
     def _handle_state_change(self, event: Any) -> None:
         """Handle state changes for tracked entities."""
         entity_id = event.data["entity_id"]
         old, new = event.data.get("old_state"), event.data.get("new_state")
-        if new is not None:
-            for person in self._people:
-                tracker = self._quiet.get(person.person_entity)
-                if tracker is None:
-                    continue
-                if entity_id == person.room_sensor:
-                    tracker.room_changed(new.last_changed, new.state)
-                if entity_id in person.activity_entities:
-                    tracker.activity_changed(
-                        entity_id,
-                        new.last_changed,
-                        old.state if old is not None else None,
-                        new.state,
-                    )
+        # A removed entity (new is None) counts as unavailable.
+        when = new.last_changed if new is not None else dt_util.utcnow()
+        new_value = new.state if new is not None else None
+        for person in self._people:
+            tracker = self._quiet.get(person.person_entity)
+            if tracker is None:
+                continue
+            if entity_id == person.room_sensor:
+                tracker.room_changed(when, new_value)
+            if entity_id in person.activity_entities:
+                tracker.activity_changed(
+                    entity_id, when, old.state if old is not None else None, new_value
+                )
         own = {
             e
             for p in self._people
-            for e in (
-                p.person_entity,
-                p.device_tracker,
-                p.room_sensor,
-                *p.sleep_sensors,
-            )
+            for e in (p.person_entity, p.device_tracker, *p.sleep_sensors)
             if e
         }
         if entity_id in own:
             self._evaluate_and_update()
         else:
-            # House activity: write only on a change, or every motion would add a row.
+            # Room tracker and house activity change often: write only when sleep
+            # changes, or every hop and every motion would add a recorder row.
             self._handle_tick(None)
+
+    def _derived_snapshot(self) -> tuple[bool, ...]:
+        return tuple(self._derived_asleep(p) for p in self._people)
 
     @callback
     def _handle_tick(self, _now: datetime | None) -> None:
-        """Re-check derived sleep; write state only when it changes."""
-        if (STATE_ON if self._evaluate_sleep_state() else STATE_OFF) != self._state:
+        """Re-check derived sleep; write when the state or a person's derived sleep changes."""
+        state = STATE_ON if self._evaluate_sleep_state() else STATE_OFF
+        if state != self._state or self._derived_snapshot() != self._last_derived:
             self._evaluate_and_update()
 
     def _derived_asleep(self, person: PersonConfig) -> bool:
@@ -1004,6 +1011,7 @@ class SleepPresenceSensor(RestoreEntity, BinarySensorEntity):
                 new_state,
                 self._area_name,
             )
+        self._last_derived = self._derived_snapshot()
         self.async_write_ha_state()
 
     @property

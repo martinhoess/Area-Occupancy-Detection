@@ -2554,6 +2554,8 @@ class TestSleepPresenceSensor:
         sensor = self._make_sensor(hass, coordinator, person)
         sensor._init_quiet(person)
         sensor.async_write_ha_state = Mock()
+        sensor._evaluate_and_update()  # first evaluation, as on setup
+        sensor.async_write_ha_state.reset_mock()
 
         for _ in range(3):
             sensor._handle_state_change(
@@ -2563,3 +2565,48 @@ class TestSleepPresenceSensor:
                 self._event(hass, "light.hall", STATE_ON, STATE_OFF)
             )
         sensor.async_write_ha_state.assert_not_called()
+
+    async def test_restored_sleep_survives_restart(
+        self, hass: HomeAssistant, coordinator: AreaOccupancyCoordinator, freezer
+    ) -> None:
+        """A derived sleep that was on before a restart stays on."""
+        freezer.move_to("2026-01-11T02:00:00+00:00")
+        person = self._derived_person()
+        hass.states.async_set("person.test", "home")
+        hass.states.async_set("light.hall", STATE_OFF)  # last_changed = start time
+        hass.states.async_set("sensor.phone_area", "Bedroom")
+        sensor = self._make_sensor(hass, coordinator, person)
+        sensor._state = STATE_ON
+        sensor._init_quiet(person)
+        assert sensor._evaluate_sleep_state() is True
+
+    async def test_derived_change_of_one_person_updates_attributes(
+        self, hass: HomeAssistant, coordinator: AreaOccupancyCoordinator, freezer
+    ) -> None:
+        """Another person sleeping keeps the state on; the tick still refreshes attributes."""
+        freezer.move_to("2026-01-10T23:00:00+00:00")
+        derived = self._derived_person()
+        other = PersonConfig(
+            person_entity="person.other",
+            sleep_sensors=["binary_sensor.in_bed"],
+            sleep_area_id="bedroom",
+        )
+        hass.states.async_set("person.test", "home")
+        hass.states.async_set("person.other", "home")
+        hass.states.async_set("binary_sensor.in_bed", STATE_ON)
+        hass.states.async_set("sensor.phone_area", "Bedroom")
+        area_name = coordinator.get_area_names()[0]
+        sensor = SleepPresenceSensor(
+            area_handle=coordinator.get_area_handle(area_name),
+            config_entry=Mock(),
+            people=[derived, other],
+        )
+        sensor.hass = hass
+        sensor._init_quiet(derived)
+        sensor.async_write_ha_state = Mock()
+        sensor._evaluate_and_update()
+        sensor.async_write_ha_state.reset_mock()
+
+        freezer.tick(timedelta(minutes=20))
+        sensor._handle_tick(None)
+        sensor.async_write_ha_state.assert_called_once()
