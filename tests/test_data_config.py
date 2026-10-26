@@ -1346,6 +1346,41 @@ class TestIntegrationConfigPeople:
         assert person.sleep_area_id == "bedroom"
         assert person.confidence_threshold == 80
 
+    def test_people_with_room_tracker_only(
+        self, hass: HomeAssistant, mock_realistic_config_entry: Mock
+    ) -> None:
+        """A room tracker without sleep sensors is a complete person; a bare tracker is not."""
+        mock_realistic_config_entry.options = {
+            CONF_PEOPLE: [
+                {
+                    CONF_PERSON_ENTITY: "person.alice",
+                    CONF_PERSON_SLEEP_AREA: "bedroom",
+                    "room_sensor": "sensor.phone_area",
+                    "room_state": "Bedroom",
+                    "activity_entities": ["light.hall"],
+                    "quiet_minutes": "30",
+                    "night_start": "22:00:00",
+                },
+                {
+                    CONF_PERSON_ENTITY: "person.bob",
+                    CONF_PERSON_SLEEP_AREA: "bedroom",
+                    "room_sensor": "sensor.bob_area",
+                },
+            ]
+        }
+        coordinator = AreaOccupancyCoordinator(hass, mock_realistic_config_entry)
+        people = IntegrationConfig(coordinator, mock_realistic_config_entry).people
+
+        assert [p.person_entity for p in people] == ["person.alice"]
+        alice = people[0]
+        assert alice.derives_sleep
+        assert alice.sleep_sensors == []
+        assert alice.activity_entities == ["light.hall"]
+        assert alice.quiet_minutes == 30
+        assert alice.room_delay_minutes == 5
+        assert alice.night_start.hour == 22
+        assert alice.night_end.hour == 11
+
     def test_people_backward_compat_old_single_sensor_key(
         self, hass: HomeAssistant, mock_realistic_config_entry: Mock
     ) -> None:

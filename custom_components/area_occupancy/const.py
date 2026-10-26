@@ -148,6 +148,18 @@ CONF_PERSON_SLEEP_SENSORS: Final = "sleep_sensors"
 CONF_PERSON_SLEEP_AREA: Final = "sleep_area_id"
 CONF_PERSON_CONFIDENCE_THRESHOLD: Final = "confidence_threshold"
 CONF_PERSON_DEVICE_TRACKER: Final = "device_tracker"
+# Sleep derived from quiet (data/quiet_sleep.py): room tracker + house activity + night window
+CONF_PERSON_ROOM_SENSOR: Final = "room_sensor"
+CONF_PERSON_ROOM_STATE: Final = "room_state"
+CONF_PERSON_ACTIVITY_ENTITIES: Final = "activity_entities"
+CONF_PERSON_ROOM_DELAY: Final = "room_delay_minutes"
+CONF_PERSON_QUIET: Final = "quiet_minutes"
+CONF_PERSON_NIGHT_START: Final = "night_start"
+CONF_PERSON_NIGHT_END: Final = "night_end"
+DEFAULT_PERSON_ROOM_DELAY: Final = 5
+DEFAULT_PERSON_QUIET: Final = 20
+DEFAULT_PERSON_NIGHT_START: Final = "21:00:00"
+DEFAULT_PERSON_NIGHT_END: Final = "11:00:00"
 
 
 # Configured Weights

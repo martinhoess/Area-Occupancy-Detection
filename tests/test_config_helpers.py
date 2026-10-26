@@ -50,6 +50,10 @@ from custom_components.area_occupancy.const import (
     CONF_PERSON_CONFIDENCE_THRESHOLD,
     CONF_PERSON_DEVICE_TRACKER,
     CONF_PERSON_ENTITY,
+    CONF_PERSON_QUIET,
+    CONF_PERSON_ROOM_DELAY,
+    CONF_PERSON_ROOM_SENSOR,
+    CONF_PERSON_ROOM_STATE,
     CONF_PERSON_SLEEP_AREA,
     CONF_PERSON_SLEEP_SENSORS,
     CONF_PURPOSE,
@@ -277,6 +281,29 @@ class TestValidatePersonInput:
             CONF_PERSON_SLEEP_SENSORS: ["sensor.sleep"],
             CONF_PERSON_SLEEP_AREA: "bedroom",
         }
+
+    def test_room_tracker_replaces_sleep_sensor(self) -> None:
+        data = self._person()
+        data[CONF_PERSON_SLEEP_SENSORS] = []
+        data[CONF_PERSON_ROOM_SENSOR] = "sensor.phone_area"
+        data[CONF_PERSON_ROOM_STATE] = " Bedroom "
+        data[CONF_PERSON_QUIET] = 999
+        result = validate_person_input(data)
+        assert result[CONF_PERSON_ROOM_STATE] == "Bedroom"
+        assert result[CONF_PERSON_QUIET] == 240
+        assert result[CONF_PERSON_ROOM_DELAY] == 5
+
+    def test_room_tracker_needs_a_state(self) -> None:
+        data = self._person()
+        data[CONF_PERSON_ROOM_SENSOR] = "sensor.phone_area"
+        with pytest.raises(vol.Invalid, match="room_state_required"):
+            validate_person_input(data)
+
+    def test_neither_sleep_sensor_nor_room_tracker(self) -> None:
+        data = self._person()
+        data[CONF_PERSON_SLEEP_SENSORS] = []
+        with pytest.raises(vol.Invalid, match="sleep_sensor_required"):
+            validate_person_input(data)
 
     def test_valid_minimal(self) -> None:
         result = validate_person_input(self._person())

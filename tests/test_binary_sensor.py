@@ -2461,3 +2461,105 @@ class TestSleepPresenceSensor:
         attributes = sensor.extra_state_attributes
         assert attributes["people"][0]["sleeping"] is True
         assert attributes["people_sleeping"] == ["person.test"]
+
+    @staticmethod
+    def _derived_person() -> PersonConfig:
+        return PersonConfig(
+            person_entity="person.test",
+            sleep_sensors=[],
+            sleep_area_id="bedroom",
+            room_sensor="sensor.phone_area",
+            room_state="Bedroom",
+            activity_entities=["binary_sensor.pc_used", "light.hall"],
+            night_start=datetime.strptime("00:00", "%H:%M").time(),
+            night_end=datetime.strptime("23:59", "%H:%M").time(),
+        )
+
+    def _event(self, hass: HomeAssistant, entity_id: str, old: str, new: str) -> Mock:
+        hass.states.async_set(entity_id, new)
+        old_state = Mock(state=old)
+        return Mock(
+            data={
+                "entity_id": entity_id,
+                "old_state": old_state,
+                "new_state": hass.states.get(entity_id),
+            }
+        )
+
+    async def test_derived_sleep_from_room_and_quiet(
+        self, hass: HomeAssistant, coordinator: AreaOccupancyCoordinator, freezer
+    ) -> None:
+        """Room tracker in the sleep room plus a quiet house derives sleep."""
+        freezer.move_to("2026-01-10T23:00:00+00:00")
+        person = self._derived_person()
+        hass.states.async_set("person.test", "home")
+        hass.states.async_set("binary_sensor.pc_used", STATE_OFF)
+        hass.states.async_set("light.hall", STATE_OFF)
+        hass.states.async_set("sensor.phone_area", "Bedroom")
+        sensor = self._make_sensor(hass, coordinator, person)
+        sensor._init_quiet(person)
+        sensor.async_write_ha_state = Mock()
+
+        freezer.tick(timedelta(minutes=19))
+        assert sensor._evaluate_sleep_state() is False  # quiet time not over
+        freezer.tick(timedelta(minutes=1))
+        assert sensor._evaluate_sleep_state() is True
+        assert sensor.extra_state_attributes["people"][0]["derived_sleep"]["asleep"]
+
+        # Using the PC is a sign of life: no sleep for another quiet time.
+        sensor._handle_state_change(
+            self._event(hass, "binary_sensor.pc_used", STATE_OFF, STATE_ON)
+        )
+        assert sensor._evaluate_sleep_state() is False
+        sensor._handle_state_change(
+            self._event(hass, "binary_sensor.pc_used", STATE_ON, STATE_OFF)
+        )
+        freezer.tick(timedelta(minutes=20))
+        assert sensor._evaluate_sleep_state() is True
+
+        # Away beats everything.
+        hass.states.async_set("person.test", "not_home")
+        assert sensor._evaluate_sleep_state() is False
+
+    async def test_derived_sleep_needs_the_sleep_room(
+        self, hass: HomeAssistant, coordinator: AreaOccupancyCoordinator, freezer
+    ) -> None:
+        """Quiet alone is not sleep when the tracker reports another room."""
+        freezer.move_to("2026-01-10T23:00:00+00:00")
+        person = self._derived_person()
+        hass.states.async_set("person.test", "home")
+        hass.states.async_set("sensor.phone_area", "Livingroom")
+        sensor = self._make_sensor(hass, coordinator, person)
+        sensor._init_quiet(person)
+        sensor.async_write_ha_state = Mock()
+
+        freezer.tick(timedelta(hours=1))
+        assert sensor._evaluate_sleep_state() is False
+        sensor._handle_state_change(
+            self._event(hass, "sensor.phone_area", "Livingroom", "Bedroom")
+        )
+        freezer.tick(timedelta(minutes=4))
+        assert sensor._evaluate_sleep_state() is False  # room delay
+        freezer.tick(timedelta(minutes=1))
+        assert sensor._evaluate_sleep_state() is True
+
+    async def test_house_activity_writes_only_on_change(
+        self, hass: HomeAssistant, coordinator: AreaOccupancyCoordinator, freezer
+    ) -> None:
+        """Activity events update the state only when sleep changes."""
+        freezer.move_to("2026-01-10T23:00:00+00:00")
+        person = self._derived_person()
+        hass.states.async_set("person.test", "home")
+        hass.states.async_set("sensor.phone_area", "Livingroom")
+        sensor = self._make_sensor(hass, coordinator, person)
+        sensor._init_quiet(person)
+        sensor.async_write_ha_state = Mock()
+
+        for _ in range(3):
+            sensor._handle_state_change(
+                self._event(hass, "light.hall", STATE_OFF, STATE_ON)
+            )
+            sensor._handle_state_change(
+                self._event(hass, "light.hall", STATE_ON, STATE_OFF)
+            )
+        sensor.async_write_ha_state.assert_not_called()

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -51,9 +51,16 @@ from ..const import (
     CONF_MOTION_SENSORS,
     CONF_MOTION_TIMEOUT,
     CONF_PEOPLE,
+    CONF_PERSON_ACTIVITY_ENTITIES,
     CONF_PERSON_CONFIDENCE_THRESHOLD,
     CONF_PERSON_DEVICE_TRACKER,
     CONF_PERSON_ENTITY,
+    CONF_PERSON_NIGHT_END,
+    CONF_PERSON_NIGHT_START,
+    CONF_PERSON_QUIET,
+    CONF_PERSON_ROOM_DELAY,
+    CONF_PERSON_ROOM_SENSOR,
+    CONF_PERSON_ROOM_STATE,
     CONF_PERSON_SLEEP_AREA,
     CONF_PERSON_SLEEP_SENSOR,
     CONF_PERSON_SLEEP_SENSORS,
@@ -108,6 +115,10 @@ from ..const import (
     DEFAULT_MOTION_PROB_GIVEN_FALSE,
     DEFAULT_MOTION_PROB_GIVEN_TRUE,
     DEFAULT_MOTION_TIMEOUT,
+    DEFAULT_PERSON_NIGHT_END,
+    DEFAULT_PERSON_NIGHT_START,
+    DEFAULT_PERSON_QUIET,
+    DEFAULT_PERSON_ROOM_DELAY,
     DEFAULT_PURPOSE,
     DEFAULT_SENSOR_PRECISION,
     DEFAULT_SLEEP_CONFIDENCE_THRESHOLD,
@@ -153,6 +164,30 @@ class PersonConfig:
     sleep_area_id: str  # e.g. "bedroom" — HA area ID
     confidence_threshold: int = DEFAULT_SLEEP_CONFIDENCE_THRESHOLD
     device_tracker: str | None = None  # optional override for home/away state
+    # Sleep derived from quiet (data/quiet_sleep.py), for people without a sleep sensor
+    room_sensor: str | None = None  # e.g. a Bermuda area sensor
+    room_state: str | None = None  # its state for the sleep room, e.g. "Bedroom"
+    activity_entities: list[str] = field(default_factory=list)
+    room_delay_minutes: int = DEFAULT_PERSON_ROOM_DELAY
+    quiet_minutes: int = DEFAULT_PERSON_QUIET
+    night_start: time = time.fromisoformat(DEFAULT_PERSON_NIGHT_START)
+    night_end: time = time.fromisoformat(DEFAULT_PERSON_NIGHT_END)
+
+    @property
+    def derives_sleep(self) -> bool:
+        """Whether sleep is also derived from the room tracker and house activity."""
+        return bool(self.room_sensor and self.room_state)
+
+
+def _int_option(data: dict[str, Any], key: str, default: int) -> int:
+    try:
+        return int(data.get(key, default))
+    except (ValueError, TypeError):
+        return default
+
+
+def _time_option(data: dict[str, Any], key: str, default: str) -> time:
+    return dt_util.parse_time(str(data.get(key) or "")) or time.fromisoformat(default)
 
 
 class IntegrationConfig:
@@ -306,7 +341,12 @@ class IntegrationConfig:
                 s for s in sleep_sensors if isinstance(s, str) and s.strip()
             ]
 
-            if not person_entity or not sleep_sensors or not sleep_area:
+            room_sensor = person_data.get(CONF_PERSON_ROOM_SENSOR) or None
+            room_state = (
+                str(person_data.get(CONF_PERSON_ROOM_STATE) or "").strip() or None
+            )
+            derived = bool(room_sensor and room_state)
+            if not person_entity or not (sleep_sensors or derived) or not sleep_area:
                 _LOGGER.warning("Skipping incomplete person config: %s", person_data)
                 continue
             try:
@@ -330,6 +370,25 @@ class IntegrationConfig:
                     sleep_area_id=sleep_area,
                     confidence_threshold=threshold,
                     device_tracker=device_tracker,
+                    room_sensor=room_sensor if derived else None,
+                    room_state=room_state if derived else None,
+                    activity_entities=[
+                        e
+                        for e in person_data.get(CONF_PERSON_ACTIVITY_ENTITIES) or []
+                        if isinstance(e, str) and e
+                    ],
+                    room_delay_minutes=_int_option(
+                        person_data, CONF_PERSON_ROOM_DELAY, DEFAULT_PERSON_ROOM_DELAY
+                    ),
+                    quiet_minutes=_int_option(
+                        person_data, CONF_PERSON_QUIET, DEFAULT_PERSON_QUIET
+                    ),
+                    night_start=_time_option(
+                        person_data, CONF_PERSON_NIGHT_START, DEFAULT_PERSON_NIGHT_START
+                    ),
+                    night_end=_time_option(
+                        person_data, CONF_PERSON_NIGHT_END, DEFAULT_PERSON_NIGHT_END
+                    ),
                 )
             )
         return result

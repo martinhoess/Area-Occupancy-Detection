@@ -1063,20 +1063,34 @@
             },
             "person_config": {
                 "title": "Configure Person",
-                "description": "Configure a person's sleep tracking. The person entity provides home/away state. Sleep sensors can be numeric (e.g., sleep confidence 0-100%) or binary (e.g., in-bed sensor).",
+                "description": "Configure a person's sleep tracking. The person entity provides home/away state. Sleep sensors can be numeric (e.g., sleep confidence 0-100%) or binary (e.g., in-bed sensor). Without a sleep sensor, sleep can be derived from a room tracker: the person counts as asleep while the tracker reports the sleep room and nothing in the house has been active for a while at night.",
                 "data": {
                     "person_entity": "Person",
                     "sleep_sensors": "Sleep Sensors",
                     "sleep_area_id": "Sleep Area",
                     "confidence_threshold": "Sleep Confidence Threshold (%)",
-                    "device_tracker": "Device Tracker"
+                    "device_tracker": "Device Tracker",
+                    "room_sensor": "Room Tracker",
+                    "room_state": "Room Tracker State for the Sleep Area",
+                    "activity_entities": "Activity Entities",
+                    "room_delay_minutes": "Room Delay (minutes)",
+                    "quiet_minutes": "Quiet Time (minutes)",
+                    "night_start": "Night Start",
+                    "night_end": "Night End"
                 },
                 "data_description": {
                     "person_entity": "Select the Home Assistant person entity. This provides home/not_home state.",
-                    "sleep_sensors": "Select one or more sleep detection sensors. Supports numeric sensors (e.g., sleep confidence 0-100%) and binary sensors (e.g., in-bed sensor, Sleep Focus). Any active sensor means the person is sleeping.",
+                    "sleep_sensors": "Select one or more sleep detection sensors. Supports numeric sensors (e.g., sleep confidence 0-100%) and binary sensors (e.g., in-bed sensor, Sleep Focus). Any active sensor means the person is sleeping. Optional when a room tracker is set.",
                     "sleep_area_id": "Select the area where this person sleeps (e.g., bedroom).",
                     "confidence_threshold": "Minimum percentage to consider the person as sleeping. Only applies to numeric sensors. Default: 75%.",
-                    "device_tracker": "Home/away detection with a specific device tracker entity. When set, this is used instead of the person entity's state. Leave empty to use the person entity."
+                    "device_tracker": "Home/away detection with a specific device tracker entity. When set, this is used instead of the person entity's state. Leave empty to use the person entity.",
+                    "room_sensor": "Optional. A sensor reporting the room the person is in (e.g., a Bermuda area sensor). Derives sleep without a sleep sensor.",
+                    "room_state": "The room tracker's state for the sleep area, e.g. Bedroom.",
+                    "activity_entities": "Lights, PCs, TVs, motion sensors and the like anywhere in the house. On, playing or paused means active; any change counts as activity.",
+                    "room_delay_minutes": "How long the room tracker must report the sleep room before it counts. Gaps up to 2 minutes are ignored. Default: 5.",
+                    "quiet_minutes": "How long nothing may have been active before the person counts as asleep. Default: 20.",
+                    "night_start": "Sleep is only derived between night start and night end. Default: 21:00.",
+                    "night_end": "Default: 11:00."
                 }
             }
         },
@@ -1104,7 +1118,9 @@
             "confidence_not_number": "Confidence threshold must be a number.",
             "invalid_selection": "Invalid selection. Please try again.",
             "unknown": "An unexpected error occurred.",
-            "person_already_configured": "This person is already configured."
+            "person_already_configured": "This person is already configured.",
+            "room_state_required": "Enter the room tracker's state for the sleep area.",
+            "minutes_not_number": "Minutes must be a number."
         }
     },
     "entity": {

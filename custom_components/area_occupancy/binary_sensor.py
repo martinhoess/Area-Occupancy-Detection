@@ -24,6 +24,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import (
     async_track_point_in_time,
     async_track_state_change_event,
+    async_track_time_interval,
 )
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -51,6 +52,7 @@ from .const import (
     NAME_SLEEP_PRESENCE,
     NAME_WASP_IN_BOX,
 )
+from .data.quiet_sleep import QuietSleep
 from .utils import assign_device_to_ha_area, generate_entity_unique_id
 
 if TYPE_CHECKING:
@@ -793,6 +795,19 @@ class SleepPresenceSensor(RestoreEntity, BinarySensorEntity):
         # State tracking
         self._state = STATE_OFF
         self._remove_state_listener: Callable[[], None] | None = None
+        self._remove_tick: Callable[[], None] | None = None
+        # Sleep derived from quiet, per person entity (only people with a room tracker)
+        self._quiet: dict[str, QuietSleep] = {
+            p.person_entity: QuietSleep(
+                room_state=p.room_state or "",
+                room_delay=timedelta(minutes=p.room_delay_minutes),
+                quiet=timedelta(minutes=p.quiet_minutes),
+                start=p.night_start,
+                end=p.night_end,
+            )
+            for p in people
+            if p.derives_sleep
+        }
 
     async def async_added_to_hass(self) -> None:
         """Handle entity which will be added."""
@@ -830,6 +845,10 @@ class SleepPresenceSensor(RestoreEntity, BinarySensorEntity):
             if person.device_tracker:
                 tracked_entities.append(person.device_tracker)
             tracked_entities.extend(person.sleep_sensors)
+            if person.derives_sleep and person.room_sensor:
+                tracked_entities.append(person.room_sensor)
+                tracked_entities.extend(person.activity_entities)
+                self._init_quiet(person)
 
         if not tracked_entities:
             _LOGGER.warning(
@@ -841,14 +860,81 @@ class SleepPresenceSensor(RestoreEntity, BinarySensorEntity):
         self._remove_state_listener = async_track_state_change_event(
             self.hass, tracked_entities, self._handle_state_change
         )
+        if self._quiet and self._remove_tick is None:
+            # Room delay and quiet time elapse without any state change.
+            self._remove_tick = async_track_time_interval(
+                self.hass, self._handle_tick, timedelta(minutes=1)
+            )
 
         # Initialize from current states
         self._evaluate_and_update()
 
+    def _init_quiet(self, person: PersonConfig) -> None:
+        """Seed the derived-sleep tracker from current states.
+
+        After a restart every entity's last_changed is the start time, so the
+        quiet time starts over: sleep is derived again only after it passed.
+        """
+        tracker = self._quiet[person.person_entity]
+        if person.room_sensor and (room := self.hass.states.get(person.room_sensor)):
+            tracker.room_changed(room.last_changed, room.state)
+        for entity_id in person.activity_entities:
+            if (state := self.hass.states.get(entity_id)) is None:
+                continue
+            tracker.activity_changed(entity_id, state.last_changed, None, state.state)
+            if state.state not in ("unknown", "unavailable", ""):
+                tracker.last_activity = max(
+                    tracker.last_activity or state.last_changed, state.last_changed
+                )
+
     @callback
     def _handle_state_change(self, event: Any) -> None:
         """Handle state changes for tracked entities."""
-        self._evaluate_and_update()
+        entity_id = event.data["entity_id"]
+        old, new = event.data.get("old_state"), event.data.get("new_state")
+        if new is not None:
+            for person in self._people:
+                tracker = self._quiet.get(person.person_entity)
+                if tracker is None:
+                    continue
+                if entity_id == person.room_sensor:
+                    tracker.room_changed(new.last_changed, new.state)
+                if entity_id in person.activity_entities:
+                    tracker.activity_changed(
+                        entity_id,
+                        new.last_changed,
+                        old.state if old is not None else None,
+                        new.state,
+                    )
+        own = {
+            e
+            for p in self._people
+            for e in (
+                p.person_entity,
+                p.device_tracker,
+                p.room_sensor,
+                *p.sleep_sensors,
+            )
+            if e
+        }
+        if entity_id in own:
+            self._evaluate_and_update()
+        else:
+            # House activity: write only on a change, or every motion would add a row.
+            self._handle_tick(None)
+
+    @callback
+    def _handle_tick(self, _now: datetime | None) -> None:
+        """Re-check derived sleep; write state only when it changes."""
+        if (STATE_ON if self._evaluate_sleep_state() else STATE_OFF) != self._state:
+            self._evaluate_and_update()
+
+    def _derived_asleep(self, person: PersonConfig) -> bool:
+        tracker = self._quiet.get(person.person_entity)
+        if tracker is None:
+            return False
+        now = dt_util.utcnow()
+        return tracker.asleep(now, dt_util.as_local(now).time())
 
     def _person_home_state(self, person: PersonConfig) -> bool | None:
         """Return whether the person is home, or None if presence is unknown.
@@ -900,6 +986,9 @@ class SleepPresenceSensor(RestoreEntity, BinarySensorEntity):
                             return True
                     except (ValueError, TypeError):
                         continue
+
+            if self._derived_asleep(person):
+                return True
         return False
 
     def _evaluate_and_update(self) -> None:
@@ -973,22 +1062,35 @@ class SleepPresenceSensor(RestoreEntity, BinarySensorEntity):
                     }
                 )
 
-            is_sleeping = is_home is not False and any_sensor_active
+            derived = self._derived_asleep(person)
+            is_sleeping = is_home is not False and (any_sensor_active or derived)
 
             if is_sleeping:
                 people_sleeping.append(friendly_name)
 
-            person_details.append(
-                {
-                    ATTR_PERSON_NAME: friendly_name,
-                    ATTR_PERSON_STATE: home_entity_state.state
-                    if home_entity_state
-                    else "unknown",
-                    ATTR_SLEEP_SENSORS: sensor_details,
-                    ATTR_SLEEP_THRESHOLD: person.confidence_threshold,
-                    ATTR_PERSON_SLEEPING: is_sleeping,
+            details: dict[str, Any] = {
+                ATTR_PERSON_NAME: friendly_name,
+                ATTR_PERSON_STATE: home_entity_state.state
+                if home_entity_state
+                else "unknown",
+                ATTR_SLEEP_SENSORS: sensor_details,
+                ATTR_SLEEP_THRESHOLD: person.confidence_threshold,
+                ATTR_PERSON_SLEEPING: is_sleeping,
+            }
+            if (tracker := self._quiet.get(person.person_entity)) is not None:
+                # Only event times, no "now": the attributes change with events, not every tick.
+                details["derived_sleep"] = {
+                    "room_sensor": person.room_sensor,
+                    "in_room_since": tracker.room_since.isoformat()
+                    if tracker.room_since
+                    else None,
+                    "last_activity": tracker.last_activity.isoformat()
+                    if tracker.last_activity
+                    else None,
+                    "active_entities": sorted(tracker.active),
+                    "asleep": derived,
                 }
-            )
+            person_details.append(details)
 
         return {
             ATTR_PEOPLE_SLEEPING: people_sleeping,
@@ -1001,6 +1103,9 @@ class SleepPresenceSensor(RestoreEntity, BinarySensorEntity):
         if self._remove_state_listener is not None:
             self._remove_state_listener()
             self._remove_state_listener = None
+        if self._remove_tick is not None:
+            self._remove_tick()
+            self._remove_tick = None
 
         area = self._get_area()
         if area is not None and area.sleep_entity_id == self.entity_id:
