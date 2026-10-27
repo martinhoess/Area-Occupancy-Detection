@@ -23,6 +23,7 @@ from ..const import (
     CORRELATION_MODERATE_THRESHOLD,
     CORRELATION_MONTHS_TO_KEEP,
     CORRELATION_WEAK_THRESHOLD,
+    DEFAULT_MOTION_TIMEOUT,
     MIN_CORRELATION_SAMPLES,
     RETENTION_RAW_NUMERIC_SAMPLES_DAYS,
 )
@@ -34,6 +35,7 @@ from ..data.entity_type import (
 )
 from ..time_utils import from_db_utc, to_db_utc, to_local, to_utc
 from ..utils import clamp_probability, map_binary_state_to_semantic
+from .queries import get_occupied_intervals
 from .utils import (
     get_occupied_intervals_for_analysis,
     is_timestamp_in_prepared_intervals,
@@ -326,6 +328,23 @@ def convert_hourly_aggregates_to_samples(
     return samples
 
 
+def _sleep_derived_from(
+    db: AreaOccupancyDB, area_name: str, entity_id: str
+) -> set[str]:
+    """The area's sleep sensor if it derives sleep from ``entity_id`` (fork).
+
+    shortcut: drops the whole Sleep Presence sensor, also the share of people
+    with a real sleep sensor in the same area; split it per person if that matters.
+    """
+    area = db.coordinator.get_area(area_name)
+    if area is None or not area.sleep_entity_id:
+        return set()
+    people = db.coordinator.integration_config.get_people_for_area(area.config.area_id)
+    if any(p.derives_sleep and p.room_sensor == entity_id for p in people):
+        return {area.sleep_entity_id}
+    return set()
+
+
 def analyze_binary_likelihoods(
     db: AreaOccupancyDB,
     area_name: str,
@@ -381,9 +400,21 @@ def analyze_binary_likelihoods(
             }
 
             # Get occupied intervals for the area
-            occupied_intervals = get_occupied_intervals_for_analysis(
-                db, area_name, period_start, period_end
-            )
+            own_sleep = _sleep_derived_from(db, area_name, entity_id)
+            if own_sleep:
+                # Fork: a room tracker would learn from the sleep derived from itself.
+                occupied_intervals = get_occupied_intervals(
+                    db,
+                    db.coordinator.entry_id,
+                    area_name,
+                    analysis_period_days + 1,  # overlap like the cache, clamped below
+                    DEFAULT_MOTION_TIMEOUT,
+                    exclude_entity_ids=own_sleep,
+                )
+            else:
+                occupied_intervals = get_occupied_intervals_for_analysis(
+                    db, area_name, period_start, period_end
+                )
 
             if not occupied_intervals:
                 base_result.update(

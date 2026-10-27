@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import datetime, timedelta
 import logging
 from typing import TYPE_CHECKING, Any
@@ -229,12 +230,14 @@ def get_occupied_intervals(
     area_name: str,
     lookback_days: int,
     motion_timeout_seconds: int,
+    exclude_entity_ids: Collection[str] = (),
 ) -> list[tuple[datetime, datetime]]:
     """Fetch occupied intervals from presence sensors (direct query).
 
     Occupied intervals are determined by motion, sleep, and media sensors
     to provide comprehensive ground truth for prior calculations and
     correlation analysis. Motion timeout is only applied to motion intervals.
+    ``exclude_entity_ids`` drops sleep/media sensors from the ground truth.
 
     For cached version with prior-specific caching, use analysis.get_occupied_intervals_with_cache.
     """
@@ -249,7 +252,9 @@ def get_occupied_intervals(
         with db.get_session() as session:
             base_filters = build_base_filters(db, entry_id, lookback_date_db, area_name)
             motion_query = build_motion_query(session, db, base_filters)
-            presence_query = build_presence_query(session, db, base_filters, area_name)
+            presence_query = build_presence_query(
+                session, db, base_filters, area_name, exclude_entity_ids
+            )
 
             all_results = execute_union_queries(
                 session, db, [motion_query, presence_query]
@@ -432,6 +437,7 @@ def build_presence_query(
     db: AreaOccupancyDB,
     base_filters: list[sa.ColumnElement[bool]],
     area_name: str,
+    exclude_entity_ids: Collection[str] = (),
 ) -> Query[Any] | None:
     """Create query selecting sleep and media presence intervals.
 
@@ -464,6 +470,9 @@ def build_presence_query(
     ]
     if not type_clauses:
         return None
+    filters = [*base_filters, sa.or_(*type_clauses)]
+    if exclude_entity_ids:
+        filters.append(db.Entities.entity_id.not_in(sorted(exclude_entity_ids)))
 
     return (
         session.query(
@@ -476,10 +485,7 @@ def build_presence_query(
             (db.Intervals.entity_id == db.Entities.entity_id)
             & (db.Intervals.area_name == db.Entities.area_name),
         )
-        .filter(
-            *base_filters,
-            sa.or_(*type_clauses),
-        )
+        .filter(*filters)
     )
 
 
