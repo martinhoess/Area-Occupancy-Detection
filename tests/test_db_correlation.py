@@ -1822,6 +1822,50 @@ class TestAnalyzeBinaryLikelihoods:
         # Otherwise, we get "no_sensor_data" (no light intervals)
         assert result["analysis_error"] in ("no_sensor_data", "no_occupied_time")
 
+    def test_analyze_binary_likelihoods_sensor_shared_with_other_area(
+        self, coordinator: AreaOccupancyCoordinator
+    ):
+        """A sensor in two areas has its intervals stored under only one of them."""
+        db = coordinator.db
+        area_name = db.coordinator.get_area_names()[0]
+        entity_id = "sensor.shared_room_tracker"
+        now = dt_util.utcnow()
+        start = now - timedelta(hours=3)
+        end = now - timedelta(hours=2)
+
+        db.save_area_data(area_name)
+        motion_entity_id = db.coordinator.get_area(area_name).config.sensors.motion[0]
+        with db.get_session() as session:
+            for owner, sensor in (
+                (area_name, motion_entity_id),
+                ("Another Area", entity_id),
+            ):
+                session.add(
+                    db.Intervals(
+                        entry_id=db.coordinator.entry_id,
+                        area_name=owner,
+                        entity_id=sensor,
+                        start_time=start,
+                        end_time=end,
+                        state="on",
+                        duration_seconds=3600,
+                    )
+                )
+            session.commit()
+        db.save_occupied_intervals_cache(area_name, [(start, end)], "motion_sensors")
+
+        result = analyze_binary_likelihoods(
+            db,
+            area_name,
+            entity_id,
+            analysis_period_days=1,
+            active_states=["on"],
+        )
+
+        assert result is not None
+        assert result["analysis_error"] is None
+        assert result["prob_given_true"] > 0.5
+
     def test_analyze_binary_likelihoods_no_active_intervals(
         self, coordinator: AreaOccupancyCoordinator
     ):

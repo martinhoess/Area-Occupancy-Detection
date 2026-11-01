@@ -463,12 +463,15 @@ def analyze_binary_likelihoods(
                 )
                 return base_result
 
-            # Get binary sensor intervals
+            # Get binary sensor intervals. Not filtered by area: a sensor shared
+            # by two areas has its intervals stored under only one of them
+            # (the unique constraint has no area_name, see sync_states).
+            # shortcut: rows under two areas after an owner change count twice
+            # (up to 1 h per change), merge them if owners ever change often.
             binary_intervals = (
                 session.query(db.Intervals)
                 .filter(
                     db.Intervals.entry_id == db.coordinator.entry_id,
-                    db.Intervals.area_name == area_name,
                     db.Intervals.entity_id == entity_id,
                     db.Intervals.start_time < period_end_db,
                     db.Intervals.end_time > period_start_db,
