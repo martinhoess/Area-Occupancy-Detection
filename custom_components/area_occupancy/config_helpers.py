@@ -39,9 +39,16 @@ from .const import (
     CONF_MOTION_PROB_GIVEN_FALSE,
     CONF_MOTION_PROB_GIVEN_TRUE,
     CONF_MOTION_SENSORS,
+    CONF_PERSON_ACTIVITY_ENTITIES,
     CONF_PERSON_CONFIDENCE_THRESHOLD,
     CONF_PERSON_DEVICE_TRACKER,
     CONF_PERSON_ENTITY,
+    CONF_PERSON_NIGHT_END,
+    CONF_PERSON_NIGHT_START,
+    CONF_PERSON_QUIET,
+    CONF_PERSON_ROOM_DELAY,
+    CONF_PERSON_ROOM_SENSOR,
+    CONF_PERSON_ROOM_STATE,
     CONF_PERSON_SLEEP_AREA,
     CONF_PERSON_SLEEP_SENSORS,
     CONF_PURPOSE,
@@ -72,6 +79,10 @@ from .const import (
     DEFAULT_MEDIA_ACTIVE_STATES,
     DEFAULT_MOTION_PROB_GIVEN_FALSE,
     DEFAULT_MOTION_PROB_GIVEN_TRUE,
+    DEFAULT_PERSON_NIGHT_END,
+    DEFAULT_PERSON_NIGHT_START,
+    DEFAULT_PERSON_QUIET,
+    DEFAULT_PERSON_ROOM_DELAY,
     DEFAULT_PURPOSE,
     DEFAULT_SLEEP_CONFIDENCE_THRESHOLD,
     DEFAULT_WEIGHT_APPLIANCE,
@@ -375,9 +386,14 @@ def validate_person_input(user_input: dict[str, Any]) -> dict[str, Any]:
     sleep_sensors = user_input.get(CONF_PERSON_SLEEP_SENSORS, [])
     sleep_area = user_input.get(CONF_PERSON_SLEEP_AREA, "")
 
+    room_sensor = user_input.get(CONF_PERSON_ROOM_SENSOR, "")
+    room_state = str(user_input.get(CONF_PERSON_ROOM_STATE) or "").strip()
+
     if not person_entity:
         raise vol.Invalid("person_entity_required")
-    if not sleep_sensors:
+    if room_sensor and not room_state:
+        raise vol.Invalid("room_state_required")
+    if not sleep_sensors and not room_sensor:
         raise vol.Invalid("sleep_sensor_required")
     if not sleep_area:
         raise vol.Invalid("sleep_area_required")
@@ -402,7 +418,38 @@ def validate_person_input(user_input: dict[str, Any]) -> dict[str, Any]:
     if device_tracker:
         result[CONF_PERSON_DEVICE_TRACKER] = device_tracker
 
+    if room_sensor:
+        result.update(
+            {
+                CONF_PERSON_ROOM_SENSOR: room_sensor,
+                CONF_PERSON_ROOM_STATE: room_state,
+                CONF_PERSON_ACTIVITY_ENTITIES: list(
+                    user_input.get(CONF_PERSON_ACTIVITY_ENTITIES) or []
+                ),
+                CONF_PERSON_ROOM_DELAY: _clamped_minutes(
+                    user_input, CONF_PERSON_ROOM_DELAY, DEFAULT_PERSON_ROOM_DELAY, 0, 60
+                ),
+                CONF_PERSON_QUIET: _clamped_minutes(
+                    user_input, CONF_PERSON_QUIET, DEFAULT_PERSON_QUIET, 1, 240
+                ),
+                CONF_PERSON_NIGHT_START: user_input.get(CONF_PERSON_NIGHT_START)
+                or DEFAULT_PERSON_NIGHT_START,
+                CONF_PERSON_NIGHT_END: user_input.get(CONF_PERSON_NIGHT_END)
+                or DEFAULT_PERSON_NIGHT_END,
+            }
+        )
+
     return result
+
+
+def _clamped_minutes(
+    data: dict[str, Any], key: str, default: int, low: int, high: int
+) -> int:
+    try:
+        value = int(data.get(key, default))
+    except (ValueError, TypeError) as err:
+        raise vol.Invalid("minutes_not_number") from err
+    return max(low, min(high, value))
 
 
 # ── Normalisation ────────────────────────────────────────────────────

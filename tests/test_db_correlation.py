@@ -15,6 +15,7 @@ from custom_components.area_occupancy.const import (
     RETENTION_RAW_NUMERIC_SAMPLES_DAYS,
 )
 from custom_components.area_occupancy.coordinator import AreaOccupancyCoordinator
+from custom_components.area_occupancy.data.config import PersonConfig
 from custom_components.area_occupancy.data.decay import Decay
 from custom_components.area_occupancy.data.entity import Entity
 from custom_components.area_occupancy.data.entity_type import EntityType, InputType
@@ -1654,6 +1655,77 @@ class TestAnalyzeBinaryLikelihoods:
         assert 0.05 <= result["prob_given_true"] <= 0.95
         assert 0.05 <= result["prob_given_false"] <= 0.95
 
+    def test_room_tracker_does_not_learn_from_its_own_derived_sleep(
+        self, coordinator: AreaOccupancyCoordinator
+    ):
+        """A room tracker learns against motion, not the sleep derived from it (fork)."""
+        db = coordinator.db
+        area_name = db.coordinator.get_area_names()[0]
+        area = db.coordinator.get_area(area_name)
+        tracker, sleep_id = "sensor.phone_area", "binary_sensor.test_sleeping"
+        other = "sensor.other_area"  # same history, not a room tracker
+        base = dt_util.utcnow() - timedelta(seconds=30)
+        db.save_area_data(area_name)
+        motion_entity_id = area.config.sensors.motion[0]
+        _create_entity(db, area_name, motion_entity_id, InputType.MOTION.value)
+        motion = _create_motion_intervals(db, area_name, motion_entity_id, 5, now=base)
+        night = (base - timedelta(hours=12), base - timedelta(hours=6))
+        _create_entity(db, area_name, sleep_id, InputType.SLEEP.value)
+        _create_entity(db, area_name, tracker, InputType.CUSTOM_BINARY.value)
+        _create_entity(db, area_name, other, InputType.CUSTOM_BINARY.value)
+        with db.get_session() as session:
+            # Tracker in the room all night (that is what made sleep) and 2 of 5 motion hours
+            day = (base - timedelta(hours=5), base - timedelta(hours=3))
+            rows = [(sleep_id, night, "on")]
+            for eid in (tracker, other):
+                rows += [(eid, night, "Bedroom"), (eid, day, "Bedroom")]
+            for eid, (start, end), state in rows:
+                session.add(
+                    db.Intervals(
+                        entry_id=db.coordinator.entry_id,
+                        area_name=area_name,
+                        entity_id=eid,
+                        start_time=start,
+                        end_time=end,
+                        state=state,
+                        duration_seconds=(end - start).total_seconds(),
+                    )
+                )
+            session.commit()
+        db.save_occupied_intervals_cache(area_name, [night, *motion], "merged")
+        area.sleep_entity_id = sleep_id
+        person = PersonConfig(
+            person_entity="person.test",
+            sleep_sensors=[],
+            sleep_area_id=area.config.area_id,
+            room_sensor=tracker,
+            room_state="Bedroom",
+        )
+
+        def learn(entity_id: str = tracker) -> float:
+            result = analyze_binary_likelihoods(
+                db,
+                area_name,
+                entity_id,
+                analysis_period_days=1,
+                active_states=["Bedroom"],
+            )
+            return result["prob_given_true"]
+
+        with patch.object(
+            coordinator.integration_config, "get_people_for_area", return_value=[]
+        ):
+            circular = learn()  # night counts as occupied: (6 + 2) / (6 + 5)
+        with patch.object(
+            coordinator.integration_config, "get_people_for_area", return_value=[person]
+        ):
+            own = learn()  # motion only: 2 / 5
+            kept = learn(other)  # everything else still learns from sleep
+
+        assert 0.68 <= circular <= 0.78
+        assert 0.35 <= own <= 0.45
+        assert kept == circular
+
     def test_analyze_binary_likelihoods_no_active_states(
         self, coordinator: AreaOccupancyCoordinator
     ):
@@ -1749,6 +1821,50 @@ class TestAnalyzeBinaryLikelihoods:
         # If motion intervals don't overlap with analysis period, we get "no_occupied_time"
         # Otherwise, we get "no_sensor_data" (no light intervals)
         assert result["analysis_error"] in ("no_sensor_data", "no_occupied_time")
+
+    def test_analyze_binary_likelihoods_sensor_shared_with_other_area(
+        self, coordinator: AreaOccupancyCoordinator
+    ):
+        """A sensor in two areas has its intervals stored under only one of them."""
+        db = coordinator.db
+        area_name = db.coordinator.get_area_names()[0]
+        entity_id = "sensor.shared_room_tracker"
+        now = dt_util.utcnow()
+        start = now - timedelta(hours=3)
+        end = now - timedelta(hours=2)
+
+        db.save_area_data(area_name)
+        motion_entity_id = db.coordinator.get_area(area_name).config.sensors.motion[0]
+        with db.get_session() as session:
+            for owner, sensor in (
+                (area_name, motion_entity_id),
+                ("Another Area", entity_id),
+            ):
+                session.add(
+                    db.Intervals(
+                        entry_id=db.coordinator.entry_id,
+                        area_name=owner,
+                        entity_id=sensor,
+                        start_time=start,
+                        end_time=end,
+                        state="on",
+                        duration_seconds=3600,
+                    )
+                )
+            session.commit()
+        db.save_occupied_intervals_cache(area_name, [(start, end)], "motion_sensors")
+
+        result = analyze_binary_likelihoods(
+            db,
+            area_name,
+            entity_id,
+            analysis_period_days=1,
+            active_states=["on"],
+        )
+
+        assert result is not None
+        assert result["analysis_error"] is None
+        assert result["prob_given_true"] > 0.5
 
     def test_analyze_binary_likelihoods_no_active_intervals(
         self, coordinator: AreaOccupancyCoordinator

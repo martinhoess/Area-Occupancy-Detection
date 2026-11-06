@@ -38,7 +38,7 @@ FRONTEND_REGISTERED_KEY: Final = f"{DOMAIN}_frontend_registered"
 # Device information
 DEVICE_MANUFACTURER: Final = "Hankanman"
 DEVICE_MODEL: Final = "Area Occupancy Detector"
-DEVICE_SW_VERSION: Final = "2026.11.1-pre1"
+DEVICE_SW_VERSION: Final = "2026.11.101"
 # Config entry format. v19 moves each area out of the legacy CONF_AREAS list
 # into its own config subentry (see migrations.py). Bumping this no longer
 # costs anyone their learned history -- that is what DB_SCHEMA_VERSION below
@@ -138,6 +138,9 @@ CONF_HEALTH_ENABLED: Final = "health_enabled"
 # Optional boolean entity that is on while the household is away (#485). Set,
 # it replaces person tracking and ``zone.home`` as the source for away mode.
 CONF_AWAY_MODE_ENTITY: Final = "away_mode_entity"
+# Fork: global entity that reports whether anyone is home at all (on = home).
+CONF_HOME_ENTITY: Final = "home_entity"
+CONF_HOME_AWAY_DELAY: Final = "home_away_delay"
 
 # People configuration constants
 CONF_PEOPLE: Final = "people"
@@ -147,6 +150,18 @@ CONF_PERSON_SLEEP_SENSORS: Final = "sleep_sensors"
 CONF_PERSON_SLEEP_AREA: Final = "sleep_area_id"
 CONF_PERSON_CONFIDENCE_THRESHOLD: Final = "confidence_threshold"
 CONF_PERSON_DEVICE_TRACKER: Final = "device_tracker"
+# Sleep derived from quiet (data/quiet_sleep.py): room tracker + house activity + night window
+CONF_PERSON_ROOM_SENSOR: Final = "room_sensor"
+CONF_PERSON_ROOM_STATE: Final = "room_state"
+CONF_PERSON_ACTIVITY_ENTITIES: Final = "activity_entities"
+CONF_PERSON_ROOM_DELAY: Final = "room_delay_minutes"
+CONF_PERSON_QUIET: Final = "quiet_minutes"
+CONF_PERSON_NIGHT_START: Final = "night_start"
+CONF_PERSON_NIGHT_END: Final = "night_end"
+DEFAULT_PERSON_ROOM_DELAY: Final = 5
+DEFAULT_PERSON_QUIET: Final = 20
+DEFAULT_PERSON_NIGHT_START: Final = "21:00:00"
+DEFAULT_PERSON_NIGHT_END: Final = "11:00:00"
 
 
 # Configured Weights
@@ -196,6 +211,9 @@ DEFAULT_SLEEP_END: Final = "07:00:00"
 DEFAULT_HEALTH_ENABLED: Final = True
 SENSOR_HEALTH_IGNORE_STORE_KEY: Final = f"{DOMAIN}.sensor_health_ignores"
 SENSOR_HEALTH_IGNORE_STORE_VERSION: Final = 1
+
+DEFAULT_HOME_ENTITY: Final = ""
+DEFAULT_HOME_AWAY_DELAY: Final = 0  # seconds; 0 = apply as soon as the entity says away
 DEFAULT_SLEEP_CONFIDENCE_THRESHOLD: Final = 75
 SLEEP_PRESENCE_HALF_LIFE: Final = (
     7200  # 2 hour half-life for sleep (persistent presence)

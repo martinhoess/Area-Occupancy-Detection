@@ -58,6 +58,7 @@ from homeassistant.helpers.selector import (
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
+    TextSelector,
     TimeSelector,
 )
 
@@ -70,6 +71,7 @@ from .config_helpers import (
     WEIGHT_MIN,
     WEIGHT_STEP,
     apply_purpose_based_decay_default,
+    duration_to_seconds,
     find_area_by_id,
     find_area_subentry_id,
     flatten_sectioned_input,
@@ -109,6 +111,8 @@ from .const import (
     CONF_DOOR_SENSORS,
     CONF_EXCLUDE_FROM_ALL_AREAS,
     CONF_HEALTH_ENABLED,
+    CONF_HOME_AWAY_DELAY,
+    CONF_HOME_ENTITY,
     CONF_HUMIDITY_SENSORS,
     CONF_ILLUMINANCE_SENSORS,
     CONF_LOCK_ACTIVE_STATE,
@@ -122,9 +126,16 @@ from .const import (
     CONF_MOTION_TIMEOUT,
     CONF_OPTION_PREFIX_AREA,
     CONF_PEOPLE,
+    CONF_PERSON_ACTIVITY_ENTITIES,
     CONF_PERSON_CONFIDENCE_THRESHOLD,
     CONF_PERSON_DEVICE_TRACKER,
     CONF_PERSON_ENTITY,
+    CONF_PERSON_NIGHT_END,
+    CONF_PERSON_NIGHT_START,
+    CONF_PERSON_QUIET,
+    CONF_PERSON_ROOM_DELAY,
+    CONF_PERSON_ROOM_SENSOR,
+    CONF_PERSON_ROOM_STATE,
     CONF_PERSON_SLEEP_AREA,
     CONF_PERSON_SLEEP_SENSOR,
     CONF_PERSON_SLEEP_SENSORS,
@@ -170,11 +181,17 @@ from .const import (
     DEFAULT_DECAY_HALF_LIFE,
     DEFAULT_EXCLUDE_FROM_ALL_AREAS,
     DEFAULT_HEALTH_ENABLED,
+    DEFAULT_HOME_AWAY_DELAY,
+    DEFAULT_HOME_ENTITY,
     DEFAULT_MEDIA_ACTIVE_STATES,
     DEFAULT_MIN_PRIOR_OVERRIDE,
     DEFAULT_MOTION_PROB_GIVEN_FALSE,
     DEFAULT_MOTION_PROB_GIVEN_TRUE,
     DEFAULT_MOTION_TIMEOUT,
+    DEFAULT_PERSON_NIGHT_END,
+    DEFAULT_PERSON_NIGHT_START,
+    DEFAULT_PERSON_QUIET,
+    DEFAULT_PERSON_ROOM_DELAY,
     DEFAULT_PURPOSE,
     DEFAULT_SENSOR_PRECISION,
     DEFAULT_SLEEP_CONFIDENCE_THRESHOLD,
@@ -1824,6 +1841,33 @@ def _create_global_settings_schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_HEALTH_ENABLED,
                 default=defaults.get(CONF_HEALTH_ENABLED, DEFAULT_HEALTH_ENABLED),
             ): BooleanSelector(),
+            vol.Optional(
+                CONF_HOME_ENTITY,
+                description={
+                    "suggested_value": defaults.get(
+                        CONF_HOME_ENTITY, DEFAULT_HOME_ENTITY
+                    )
+                    or None
+                },
+            ): EntitySelector(
+                EntitySelectorConfig(
+                    domain=[
+                        "binary_sensor",
+                        "device_tracker",
+                        "input_boolean",
+                        "person",
+                        "zone",
+                    ]
+                )
+            ),
+            vol.Required(
+                CONF_HOME_AWAY_DELAY,
+                default=seconds_to_duration(
+                    duration_to_seconds(
+                        defaults.get(CONF_HOME_AWAY_DELAY, DEFAULT_HOME_AWAY_DELAY)
+                    )
+                ),
+            ): DurationSelector(),
             vol.Required(
                 CONF_SENSOR_PRECISION,
                 default=defaults.get(CONF_SENSOR_PRECISION, DEFAULT_SENSOR_PRECISION),
@@ -3208,6 +3252,14 @@ class AreaOccupancyOptionsFlow(OptionsFlow, BaseOccupancyFlow):
             # cannot remove a key, so the old value would come back.
             if CONF_AWAY_MODE_ENTITY not in user_input:
                 new_options.pop(CONF_AWAY_MODE_ENTITY, None)
+            # Explicit, because an emptied entity field is simply absent from
+            # user_input and update() would keep the old value forever.
+            new_options[CONF_HOME_ENTITY] = user_input.get(
+                CONF_HOME_ENTITY, DEFAULT_HOME_ENTITY
+            )
+            new_options[CONF_HOME_AWAY_DELAY] = duration_to_seconds(
+                user_input.get(CONF_HOME_AWAY_DELAY, DEFAULT_HOME_AWAY_DELAY)
+            )
 
             return self.async_create_entry(title="", data=new_options)
 
@@ -3226,6 +3278,12 @@ class AreaOccupancyOptionsFlow(OptionsFlow, BaseOccupancyFlow):
                 CONF_SENSOR_PRECISION, DEFAULT_SENSOR_PRECISION
             ),
             CONF_AWAY_MODE_ENTITY: self.config_entry.options.get(CONF_AWAY_MODE_ENTITY),
+            CONF_HOME_ENTITY: self.config_entry.options.get(
+                CONF_HOME_ENTITY, DEFAULT_HOME_ENTITY
+            ),
+            CONF_HOME_AWAY_DELAY: self.config_entry.options.get(
+                CONF_HOME_AWAY_DELAY, DEFAULT_HOME_AWAY_DELAY
+            ),
         }
 
         return self.async_show_form(
@@ -3462,12 +3520,18 @@ class AreaOccupancyOptionsFlow(OptionsFlow, BaseOccupancyFlow):
                 else:
                     return result
 
+        own_entities = [
+            entry.entity_id
+            for entry in er.async_entries_for_config_entry(
+                er.async_get(self.hass), self.config_entry.entry_id
+            )
+        ]
         base_schema = vol.Schema(
             {
                 vol.Required(CONF_PERSON_ENTITY): EntitySelector(
                     EntitySelectorConfig(domain="person")
                 ),
-                vol.Required(CONF_PERSON_SLEEP_SENSORS): EntitySelector(
+                vol.Optional(CONF_PERSON_SLEEP_SENSORS): EntitySelector(
                     EntitySelectorConfig(
                         domain=["sensor", "binary_sensor"], multiple=True
                     )
@@ -3489,6 +3553,34 @@ class AreaOccupancyOptionsFlow(OptionsFlow, BaseOccupancyFlow):
                 vol.Optional(CONF_PERSON_DEVICE_TRACKER): EntitySelector(
                     EntitySelectorConfig(domain="device_tracker")
                 ),
+                vol.Optional(CONF_PERSON_ROOM_SENSOR): EntitySelector(
+                    EntitySelectorConfig(domain="sensor")
+                ),
+                vol.Optional(CONF_PERSON_ROOM_STATE): TextSelector(),
+                vol.Optional(CONF_PERSON_ACTIVITY_ENTITIES): EntitySelector(
+                    # Own outputs (sleep presence, area/floor occupancy) would feed back.
+                    EntitySelectorConfig(multiple=True, exclude_entities=own_entities)
+                ),
+                vol.Optional(
+                    CONF_PERSON_ROOM_DELAY, default=DEFAULT_PERSON_ROOM_DELAY
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0, max=60, step=1, mode=NumberSelectorMode.BOX
+                    )
+                ),
+                vol.Optional(
+                    CONF_PERSON_QUIET, default=DEFAULT_PERSON_QUIET
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=1, max=240, step=1, mode=NumberSelectorMode.BOX
+                    )
+                ),
+                vol.Optional(
+                    CONF_PERSON_NIGHT_START, default=DEFAULT_PERSON_NIGHT_START
+                ): TimeSelector(),
+                vol.Optional(
+                    CONF_PERSON_NIGHT_END, default=DEFAULT_PERSON_NIGHT_END
+                ): TimeSelector(),
             }
         )
 

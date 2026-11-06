@@ -34,6 +34,7 @@ from ..data.entity_type import (
 )
 from ..time_utils import from_db_utc, to_db_utc, to_local, to_utc
 from ..utils import clamp_probability, map_binary_state_to_semantic
+from .queries import get_occupied_intervals
 from .utils import (
     get_occupied_intervals_for_analysis,
     is_timestamp_in_prepared_intervals,
@@ -326,6 +327,23 @@ def convert_hourly_aggregates_to_samples(
     return samples
 
 
+def _sleep_derived_from(
+    db: AreaOccupancyDB, area_name: str, entity_id: str
+) -> set[str]:
+    """The area's sleep sensor if it derives sleep from ``entity_id`` (fork).
+
+    shortcut: drops the whole Sleep Presence sensor, also the share of people
+    with a real sleep sensor in the same area; split it per person if that matters.
+    """
+    area = db.coordinator.get_area(area_name)
+    if area is None or not area.sleep_entity_id:
+        return set()
+    people = db.coordinator.integration_config.get_people_for_area(area.config.area_id)
+    if any(p.derives_sleep and p.room_sensor == entity_id for p in people):
+        return {area.sleep_entity_id}
+    return set()
+
+
 def analyze_binary_likelihoods(
     db: AreaOccupancyDB,
     area_name: str,
@@ -381,9 +399,21 @@ def analyze_binary_likelihoods(
             }
 
             # Get occupied intervals for the area
-            occupied_intervals = get_occupied_intervals_for_analysis(
-                db, area_name, period_start, period_end
-            )
+            own_sleep = _sleep_derived_from(db, area_name, entity_id)
+            if own_sleep:
+                # Fork: a room tracker would learn from the sleep derived from itself.
+                occupied_intervals = get_occupied_intervals(
+                    db,
+                    db.coordinator.entry_id,
+                    area_name,
+                    analysis_period_days + 1,  # overlap like the cache, clamped below
+                    None,  # the area's own motion timeout, as the cache uses
+                    exclude_entity_ids=own_sleep,
+                )
+            else:
+                occupied_intervals = get_occupied_intervals_for_analysis(
+                    db, area_name, period_start, period_end
+                )
 
             if not occupied_intervals:
                 base_result.update(
@@ -432,12 +462,15 @@ def analyze_binary_likelihoods(
                 )
                 return base_result
 
-            # Get binary sensor intervals
+            # Get binary sensor intervals. Not filtered by area: a sensor shared
+            # by two areas has its intervals stored under only one of them
+            # (the unique constraint has no area_name, see sync_states).
+            # shortcut: rows under two areas after an owner change count twice
+            # (up to 1 h per change), merge them if owners ever change often.
             binary_intervals = (
                 session.query(db.Intervals)
                 .filter(
                     db.Intervals.entry_id == db.coordinator.entry_id,
-                    db.Intervals.area_name == area_name,
                     db.Intervals.entity_id == entity_id,
                     db.Intervals.start_time < period_end_db,
                     db.Intervals.end_time > period_start_db,
