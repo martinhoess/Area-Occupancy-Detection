@@ -149,6 +149,9 @@ class Entity:
     # the user hasn't ignored the repair: the start of the stuck stretch.
     # While set, the sensor contributes no evidence (see ``is_stuck``).
     stuck_since: datetime | None = None
+    # Set on every refresh while the only person at home is demonstrably in
+    # another room (see ``data.contradiction``); counts like ``stuck_since``.
+    contradicted_since: datetime | None = None
     # When the sensor last moved between two of its active states, such as a
     # media player going from paused to playing. ``last_updated`` only moves
     # when the evidence flips, so it misses these. In memory only: after a
@@ -214,10 +217,11 @@ class Entity:
         it counts again, without waiting for the next hourly check.
         """
         active_since = self.active_since
-        return (
-            self.stuck_since is not None
-            and active_since is not None
-            and active_since <= self.stuck_since
+        if active_since is None:
+            return False
+        return any(
+            since is not None and active_since <= since
+            for since in (self.stuck_since, self.contradicted_since)
         )
 
     def _calculate_gaussian_density(
@@ -1351,6 +1355,7 @@ class EntityManager:
             new.previous_evidence = old.previous_evidence
             new.last_updated = old.last_updated
             new.stuck_since = old.stuck_since
+            new.contradicted_since = old.contradicted_since
             new.active_state_changed_at = old.active_state_changed_at
             new.previous_state = old.previous_state
         previous.clear()

@@ -72,6 +72,7 @@ from .data.analysis import run_full_analysis
 from .data.away_shadow import AwayShadow, AwayShadowState
 from .data.config import IntegrationConfig
 from .data.continuity_shadow import ContinuityShadow, ContinuityState, half_life_ratio
+from .data.contradiction import confirms_presence, contradicted_since, tracked_room
 from .data.door_hold import DoorHold, DoorHoldState
 from .data.entity_type import (
     BINARY_INPUT_TYPES,
@@ -839,6 +840,8 @@ class AreaOccupancyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for entity in area.entities.entities.values():
                 entity.decay.set_modifier_factor(modifier.decay_modifier)
 
+        self._flag_contradicted_sensors(now)
+
         for area_name, area in self.areas.items():
             self._observe_door_hold(area_name, area, now)
 
@@ -856,6 +859,33 @@ class AreaOccupancyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "last_updated": now,
             }
         return result
+
+    def _flag_contradicted_sensors(self, now: datetime) -> None:
+        """Stop counting sensors the only person at home is not near.
+
+        Decided on every refresh (see ``data.contradiction``). A flag holds
+        while the same stretch stays on, and goes when the person is back in
+        that room, someone else comes home, or the sensor changes state.
+        """
+        room = tracked_room(self.hass, self.integration_config.people)
+        if room is None:
+            for area in self.areas.values():
+                for entity in area.entities.entities.values():
+                    entity.contradicted_since = None
+            return
+        fresh = {
+            area.config.area_id or area.area_name: confirms_presence(
+                area.entities.entities.values(), now
+            )
+            for area in self.areas.values()
+        }
+        confirmed = room.area_id is not None and fresh.get(room.area_id, False)
+        for area in self.areas.values():
+            area_id = area.config.area_id or area.area_name
+            for entity in area.entities.entities.values():
+                entity.contradicted_since = contradicted_since(
+                    entity, area_id, room, confirmed, fresh[area_id], now
+                )
 
     def _record_shadow_tick(
         self,

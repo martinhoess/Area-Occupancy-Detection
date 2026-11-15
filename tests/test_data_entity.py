@@ -3228,6 +3228,7 @@ class TestRefreshFromConfig:
         flagged = dt_util.utcnow() - timedelta(hours=20)
         resumed = dt_util.utcnow() - timedelta(minutes=5)
         media.stuck_since = flagged
+        media.contradicted_since = flagged
         media.active_state_changed_at = resumed
         media.previous_state = "playing"
 
@@ -3235,6 +3236,7 @@ class TestRefreshFromConfig:
 
         after = manager.get_entity(self.MEDIA)
         assert after.stuck_since == flagged
+        assert after.contradicted_since == flagged
         assert after.active_state_changed_at == resumed
         assert after.previous_state == "playing"
 
