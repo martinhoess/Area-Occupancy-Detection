@@ -261,6 +261,19 @@ def _issue_id(area_id: str, entity_id: str | None, issue_type: HealthIssueType) 
     return f"sensor_health_{entity_id}_{issue_type}"
 
 
+def _ignore_ends_with_stretch(issue_id: str) -> bool:
+    """Whether an Ignore covers only the stuck stretch it was given for.
+
+    Ignoring a stuck-active repair says that one long activity was real, and
+    keeps the sensor counting. Kept past the stretch, a single click would
+    switch off stuck detection for that sensor for good, and the next hang
+    would hold its area occupied with nothing to show for it.
+    """
+    return issue_id.startswith("sensor_health_") and issue_id.endswith(
+        f"_{HealthIssueType.STUCK_ACTIVE}"
+    )
+
+
 def _is_ignored(hass: HomeAssistant, issue_id: str) -> bool:
     """Read HA's persistent Ignore choice, including for inactive repairs."""
     try:
@@ -290,6 +303,11 @@ class SensorHealthRepairs:
             hass, SENSOR_HEALTH_IGNORE_STORE_VERSION, SENSOR_HEALTH_IGNORE_STORE_KEY
         )
         self._shutting_down = False
+        # Areas that have published findings since this publisher started. Until
+        # every registered area has, a missing stuck finding may just be an area
+        # that has not checked yet (after a restart or reload), not a stretch
+        # that ended, so its Ignore must hold.
+        self._reported: set[str] = set()
         try:
             self._active_issue_ids = {
                 issue_id
@@ -301,7 +319,13 @@ class SensorHealthRepairs:
 
     async def async_load(self) -> None:
         """Restore Ignore choices for sensor problems replaced by another type."""
-        self._ignored_issue_ids = set(await self._ignore_store.async_load() or [])
+        # A stuck stretch never outlives a restart's archive: drop such choices
+        # saved by older versions, which archived them like any other type.
+        self._ignored_issue_ids = {
+            issue_id
+            for issue_id in await self._ignore_store.async_load() or []
+            if not _ignore_ends_with_stretch(issue_id)
+        }
 
     async def async_shutdown(self) -> None:
         """Flush saved choices and preserve repairs during coordinator teardown."""
@@ -332,20 +356,34 @@ class SensorHealthRepairs:
         area_name: str,
         issues: list[HealthIssue],
         entity_ids: set[str],
+        *,
+        checked: bool = True,
     ) -> None:
-        """Replace one area's sensor findings and refresh the shared repairs."""
+        """Replace one area's sensor findings and refresh the shared repairs.
+
+        ``checked`` is False until the area's first sensor check has run; until
+        every area has, a stuck stretch's Ignore holds (``_all_reported``).
+        If a check keeps failing, that Ignore holds until it succeeds.
+        """
         self._areas[area_id] = (
             area_name,
             [issue for issue in issues if issue.entity_id is not None],
         )
         self._entities[area_id] = entity_ids
+        if checked:
+            self._reported.add(area_id)
         self._publish()
+
+    def _all_reported(self) -> bool:
+        """Whether every registered area has published since start-up."""
+        return set(self._entities) <= self._reported
 
     def remove_area(self, area_id: str) -> None:
         """Withdraw an area, preserving repairs and ignores used elsewhere."""
         if self._shutting_down:
             return
         self._areas.pop(area_id, None)
+        self._reported.discard(area_id)
         removed_entities = self._entities.pop(area_id, set())
         remaining_entities = set().union(*self._entities.values())
         orphaned_ids = {
@@ -384,6 +422,7 @@ class SensorHealthRepairs:
         self._active_issue_ids.clear()
         self._areas.clear()
         self._entities.clear()
+        self._reported.clear()
         if self._ignored_issue_ids:
             self._ignored_issue_ids.clear()
             self._save_ignores()
@@ -403,10 +442,14 @@ class SensorHealthRepairs:
         resolved_ids = {
             issue_id
             for issue_id in self._active_issue_ids - current_ids
-            if not _is_ignored(self._hass, issue_id)
+            if (_ignore_ends_with_stretch(issue_id) and self._all_reported())
+            or not _is_ignored(self._hass, issue_id)
         }
         for issue_id in resolved_ids:
             ir.async_delete_issue(self._hass, DOMAIN, issue_id)
+        if self._ignored_issue_ids & resolved_ids:
+            self._ignored_issue_ids -= resolved_ids
+            self._save_ignores()
         if resolved_ids:
             _LOGGER.info("Resolved %d sensor health issue(s)", len(resolved_ids))
         self._active_issue_ids = (self._active_issue_ids - resolved_ids) | current_ids
@@ -487,6 +530,13 @@ class SensorHealthRepairs:
             if issue_type not in _PIPELINE_ISSUE_TYPES
         } - {current_id}
         for issue_id in self._active_issue_ids & other_ids:
+            if _ignore_ends_with_stretch(issue_id) and self._all_reported():
+                # Another problem means the stuck stretch is over, and its
+                # Ignore with it.
+                ir.async_delete_issue(self._hass, DOMAIN, issue_id)
+                self._active_issue_ids.discard(issue_id)
+                self._ignored_issue_ids.discard(issue_id)
+                continue
             self._retire_repair(issue_id, issue_id)
 
     def _retire_repair(self, issue_id: str, shared_id: str) -> None:
@@ -552,6 +602,9 @@ class HealthMonitor:
         self._issues: list[HealthIssue] = []
         self._checked_count: int = 0
         self._last_check: datetime | None = None
+        # Whether a sensor check has completed since start-up. Pipeline checks
+        # and state changes publish too, but with no sensor findings yet.
+        self._sensors_checked = False
         # Whether the household was away at the last sample, and when it last
         # went from away to home (#485). Sampled on each check run, so the
         # return time is accurate to the check interval (hourly), which is
@@ -710,6 +763,7 @@ class HealthMonitor:
         self._issues = issues + [
             issue for issue in self._issues if issue.issue_type in _PIPELINE_ISSUE_TYPES
         ]
+        self._sensors_checked = True
         self._update_repair_issues()
         self._flag_stuck_entities(entities, issues)
         return issues
@@ -785,7 +839,8 @@ class HealthMonitor:
         A sensor stuck on (a TV left paused for a day, a PIR that stopped
         reporting while "on") would otherwise hold the area occupied. It
         stays a repair for the user; ignoring that repair says the long
-        activity is real, so an ignored issue leaves the sensor counting.
+        activity is real, so an ignored issue leaves the sensor counting
+        until that stretch ends (``_ignore_ends_with_stretch``).
         """
         stuck = {
             issue.entity_id: issue.since
@@ -1427,7 +1482,11 @@ class HealthMonitor:
     def _update_repair_issues(self) -> None:
         """Publish shared sensor repairs and this area's pipeline repairs."""
         self._sensor_repairs.update(
-            self._area_id, self._area_name, self._issues, self._entity_ids
+            self._area_id,
+            self._area_name,
+            self._issues,
+            self._entity_ids,
+            checked=self._sensors_checked,
         )
         current_issue_ids: set[str] = set()
         for issue in self._issues:

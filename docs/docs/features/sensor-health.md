@@ -65,7 +65,9 @@ counted in the first place.
 
 The repair stays open for you to fix. If the long activity is real (a TV
 that genuinely plays all day), **Ignore** the repair and the sensor keeps
-counting.
+counting for that stretch. The Ignore ends with the stretch: once the sensor
+changes state or another problem replaces the repair, the next hang is
+reported again and stops counting as before.
 
 Stuck stretches don't train the model either. When the area learns from
 history, any motion or media stretch longer than its stuck-active threshold
@@ -155,7 +157,7 @@ New repairs are still raised by the hourly check, since every threshold is an ho
 
 A sensor can't trigger while it is offline, so after an outage of an hour or more its inactivity checks count from when it came back. A sensor that spent five days offline doesn't return to a "hasn't triggered for eight days" repair.
 
-A repair you **Ignore** stays ignored, including the next time the same sensor has the same problem, and is not deleted when the sensor recovers. If a different problem replaces it, only the new repair is shown; the earlier Ignore choice is saved separately and restored when that problem returns, including across restarts. Ignoring one problem does not silence a different problem with the same sensor. To get alerts for a currently ignored problem again, un-ignore it from the ignored repairs in **Settings → System → Repairs**.
+A repair you **Ignore** stays ignored, including the next time the same sensor has the same problem, and is not deleted when the sensor recovers. The exception is a stuck-active repair: its Ignore covers only the stretch it was given for (see above). If a different problem replaces it, only the new repair is shown; the earlier Ignore choice is saved separately and restored when that problem returns, including across restarts. Ignoring one problem does not silence a different problem with the same sensor. To get alerts for a currently ignored problem again, un-ignore it from the ignored repairs in **Settings → System → Repairs**.
 
 ## Sensor Health Entity
 
