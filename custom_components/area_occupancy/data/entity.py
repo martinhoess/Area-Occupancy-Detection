@@ -163,6 +163,9 @@ class Entity:
     # starts to decay: the area's motion timeout for a PIR-like motion
     # sensor (set by the coordinator from the live labeller's call), else 0.
     decay_delay: float = 0.0
+    # Seconds a new active state must hold before it counts as evidence,
+    # set by the coordinator for a person's room tracker (fork), else 0.
+    settle_delay: float = 0.0
 
     def __post_init__(self) -> None:
         """Validate that either hass or state_provider is provided.
@@ -508,7 +511,7 @@ class Entity:
             mapped_state = map_binary_state_to_semantic(
                 str(self.state), self.active_states
             )
-            return mapped_state in self.active_states
+            return mapped_state in self.active_states and not self._settling()
         if self.active_range:
             min_val, max_val = self.active_range
             try:
@@ -517,6 +520,17 @@ class Entity:
                 return False
 
         return None
+
+    def _settling(self) -> bool:
+        """Whether the current state is younger than ``settle_delay``."""
+        if self.settle_delay <= 0 or self.hass is None:
+            return False
+        ha_state = self.hass.states.get(self.entity_id)
+        return (
+            ha_state is not None
+            and (dt_util.utcnow() - ha_state.last_changed).total_seconds()
+            < self.settle_delay
+        )
 
     @property
     def active(self) -> bool:

@@ -57,6 +57,7 @@ from .const import (
     LIKELIHOOD_SHADOW_STORE_VERSION,
     ONLINE_PRIOR_STORE_KEY_PREFIX,
     ONLINE_PRIOR_STORE_VERSION,
+    ROOM_TRACKER_SETTLE_SECONDS,
     SAVE_INTERVAL,
     TRANSITION_SHADOW_STORE_KEY_PREFIX,
     TRANSITION_SHADOW_STORE_VERSION,
@@ -840,6 +841,7 @@ class AreaOccupancyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for entity in area.entities.entities.values():
                 entity.decay.set_modifier_factor(modifier.decay_modifier)
 
+        self._settle_room_trackers()
         self._flag_contradicted_sensors(now)
 
         for area_name, area in self.areas.items():
@@ -859,6 +861,24 @@ class AreaOccupancyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "last_updated": now,
             }
         return result
+
+    def _settle_room_trackers(self) -> None:
+        """Let a person's room tracker count only once its room has held.
+
+        A settled tracker turns active without a state change, so its
+        transition is taken here, on every refresh.
+
+        shortcut: the decay timer refreshes only when some area has decay
+        enabled; without it a settled tracker waits for the next refresh.
+        """
+        trackers = {p.room_sensor for p in self.integration_config.people}
+        for area in self.areas.values():
+            for entity in area.entities.entities.values():
+                if entity.entity_id in trackers:
+                    entity.settle_delay = float(ROOM_TRACKER_SETTLE_SECONDS)
+                    entity.has_new_evidence()
+                else:
+                    entity.settle_delay = 0.0
 
     def _flag_contradicted_sensors(self, now: datetime) -> None:
         """Stop counting sensors the only person at home is not near.

@@ -541,6 +541,9 @@ CORRELATION_MONTHS_TO_KEEP: Final = 24
 
 # Coordinator timer intervals
 DECAY_INTERVAL: Final = 10  # seconds
+# A person's room tracker (e.g. Bermuda) counts in an area only once it has
+# reported that room this long: its jumps of a few seconds are noise (fork).
+ROOM_TRACKER_SETTLE_SECONDS: Final = 90
 ANALYSIS_INTERVAL: Final = 3600  # seconds (1 hour)
 SAVE_INTERVAL: Final = 600  # seconds (10 minutes) - periodic database save interval
 
