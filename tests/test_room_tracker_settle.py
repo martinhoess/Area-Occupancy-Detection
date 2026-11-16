@@ -189,17 +189,20 @@ class TestRoomTrackerSettle:
         assert tracker.evidence is True
         assert not tracker.decay.is_decaying
 
+    @pytest.mark.parametrize("via", [None, "before", "after"])
     def test_noise_after_leaving_does_not_chain(
         self,
         hass: HomeAssistant,
         coordinator: AreaOccupancyCoordinator,
         freezer: FrozenDateTimeFactory,
         tracker: Entity,
+        via: str | None,
     ) -> None:
         """After a stay, the phone next door jumps in for 3 s every minute.
 
         Only a jump within ROOM_GAP of the stay counts; a 3 s jump does not
-        move ``counted_at`` on, so the bridge ends and the room empties.
+        move ``counted_at`` on, so the bridge ends and the room empties. The
+        same holds when a jump starts or ends through ``unavailable``.
         """
         self._refresh(coordinator)
         self._move(hass, tracker, "Bedroom")
@@ -209,10 +212,17 @@ class TestRoomTrackerSettle:
         left = dt_util.utcnow()
         counted = 0
         for _ in range(30):
-            freezer.tick(timedelta(seconds=57))
+            if via == "before":
+                freezer.tick(timedelta(seconds=56))
+                self._move(hass, tracker, "unavailable")
+                freezer.tick(timedelta(seconds=1))
+            else:
+                freezer.tick(timedelta(seconds=57))
             self._move(hass, tracker, "Bedroom")
             counted += tracker.evidence is True
             freezer.tick(timedelta(seconds=3))
+            if via == "after":
+                self._move(hass, tracker, "unavailable")
             self._move(hass, tracker, "Livingroom")
             self._refresh(coordinator)
         assert counted == 2  # jumps at 57 s and 117 s, then no more
