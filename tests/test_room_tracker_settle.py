@@ -13,6 +13,7 @@ from custom_components.area_occupancy.data.decay import Decay
 from custom_components.area_occupancy.data.entity import Entity
 from custom_components.area_occupancy.data.entity_type import EntityType, InputType
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 from tests.conftest import create_test_area
 
 # ruff: noqa: SLF001
@@ -153,8 +154,9 @@ class TestRoomTrackerSettle:
     ) -> None:
         """After a restart last_changed is the start time; the stay still counts.
 
-        The settled stay ends with no decay: reconcile and the first refresh
-        judge the tracker alike, and the bridge keeps the restored stay.
+        Reconcile sets the settle delay, so the restored stay flips to false
+        once and sets ``counted_at``; the state began before that, so the
+        bridge counts it again at once and stops the decay.
         """
         hass.states.async_set(TRACKER, "Bedroom")  # state written at start
         tracker.previous_evidence = True  # restored from the database
@@ -168,6 +170,83 @@ class TestRoomTrackerSettle:
             coordinator._settle_room_trackers()  # first refresh
         assert tracker.evidence is True
         assert not tracker.decay.is_decaying
+
+    def test_flicker_through_unavailable_keeps_counting(
+        self,
+        hass: HomeAssistant,
+        coordinator: AreaOccupancyCoordinator,
+        freezer: FrozenDateTimeFactory,
+        tracker: Entity,
+    ) -> None:
+        """The tracker loses the phone for 3 s: the stay goes on."""
+        self._refresh(coordinator)
+        self._move(hass, tracker, "Bedroom")
+        freezer.tick(SETTLED)
+        self._refresh(coordinator)
+        self._move(hass, tracker, "unavailable")
+        freezer.tick(timedelta(seconds=3))
+        self._move(hass, tracker, "Bedroom")
+        assert tracker.evidence is True
+        assert not tracker.decay.is_decaying
+
+    def test_noise_after_leaving_does_not_chain(
+        self,
+        hass: HomeAssistant,
+        coordinator: AreaOccupancyCoordinator,
+        freezer: FrozenDateTimeFactory,
+        tracker: Entity,
+    ) -> None:
+        """After a stay, the phone next door jumps in for 3 s every minute.
+
+        Only a jump within ROOM_GAP of the stay counts; a 3 s jump does not
+        move ``counted_at`` on, so the bridge ends and the room empties.
+        """
+        self._refresh(coordinator)
+        self._move(hass, tracker, "Bedroom")
+        freezer.tick(SETTLED)
+        self._refresh(coordinator)
+        self._move(hass, tracker, "Livingroom")
+        left = dt_util.utcnow()
+        counted = 0
+        for _ in range(30):
+            freezer.tick(timedelta(seconds=57))
+            self._move(hass, tracker, "Bedroom")
+            counted += tracker.evidence is True
+            freezer.tick(timedelta(seconds=3))
+            self._move(hass, tracker, "Livingroom")
+            self._refresh(coordinator)
+        assert counted == 2  # jumps at 57 s and 117 s, then no more
+        assert tracker.decay.decay_start <= left + timedelta(seconds=120)
+
+    def test_rebuild_keeps_settle_and_bridge(
+        self,
+        hass: HomeAssistant,
+        coordinator: AreaOccupancyCoordinator,
+        freezer: FrozenDateTimeFactory,
+        tracker: Entity,
+    ) -> None:
+        """A settings edit rebuilds the entities mid-gap: the bridge holds."""
+        self._refresh(coordinator)
+        self._move(hass, tracker, "Bedroom")
+        freezer.tick(SETTLED)
+        self._refresh(coordinator)
+        self._move(hass, tracker, "Livingroom")
+        manager = coordinator.areas["Bedroom"].entities
+        with patch.object(
+            manager._factory,
+            "create_all_from_config",
+            return_value={TRACKER: _custom(hass, TRACKER)},
+        ):
+            manager.refresh_from_config()
+        rebuilt = manager.entities[TRACKER]
+        freezer.tick(timedelta(seconds=3))
+        hass.states.async_set(TRACKER, "Bedroom")
+        assert rebuilt.evidence is True  # bridged, as before the rebuild
+        hass.states.async_set(TRACKER, "Livingroom")
+        rebuilt.has_new_evidence()
+        freezer.tick(timedelta(minutes=5))
+        hass.states.async_set(TRACKER, "Bedroom")
+        assert rebuilt.evidence is False  # a later jump still waits
 
     async def test_refresh_ignores_a_short_jump(
         self,

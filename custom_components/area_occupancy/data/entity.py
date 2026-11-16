@@ -172,6 +172,9 @@ class Entity:
     # That bridges a tracker's drop-out, and the start-time last_changed
     # after a restart for a restored stay.
     counted_at: datetime | None = None
+    # Gap a bridged state closed, in seconds: its end moves ``counted_at`` on
+    # only if it held longer, so 3 s jumps into a room just left don't chain.
+    bridged_gap: float | None = None
 
     def __post_init__(self) -> None:
         """Validate that either hass or state_provider is provided.
@@ -535,9 +538,35 @@ class Entity:
         if ha_state is None:
             return False
         since = ha_state.last_changed
-        if self.counted_at is not None and since - self.counted_at <= ROOM_GAP:
+        if self._bridge_gap(since) is not None:
             return False  # back right after a counted stay: the stay goes on
         return (dt_util.utcnow() - since).total_seconds() < self.settle_delay
+
+    def _bridge_gap(self, since: datetime) -> float | None:
+        """Seconds from ``counted_at`` to ``since`` if within ROOM_GAP, else None."""
+        if self.counted_at is None:
+            return None
+        gap = (since - self.counted_at).total_seconds()
+        return max(gap, 0.0) if gap <= ROOM_GAP.total_seconds() else None
+
+    def _began_counting(self) -> None:
+        """Evidence turned true: remember the gap a bridged return closed."""
+        ha_state = self.hass.states.get(self.entity_id) if self.hass else None
+        self.bridged_gap = (
+            self._bridge_gap(ha_state.last_changed)
+            if self.settle_delay > 0 and ha_state is not None
+            else None
+        )
+
+    def _stopped_counting(self, now: datetime) -> None:
+        """Evidence turned false or unknown: move ``counted_at`` on.
+
+        Not when a bridged state held no longer than the gap before it.
+        """
+        held = (now - self.last_updated).total_seconds() if self.last_updated else None
+        if self.bridged_gap is None or held is None or held > self.bridged_gap:
+            self.counted_at = now
+        self.bridged_gap = None
 
     @property
     def active(self) -> bool:
@@ -770,7 +799,9 @@ class Entity:
                 if not self.is_stuck:
                     self.decay.start_decay()
                 self.stuck_since = None
-                self.last_updated = self.counted_at = dt_util.utcnow()
+                now = dt_util.utcnow()
+                self._stopped_counting(now)
+                self.last_updated = now
             # Update previous evidence to track the unavailable state
             self.previous_evidence = current_evidence
             return False  # No "new evidence" but decay state updated
@@ -780,6 +811,7 @@ class Entity:
             # Entity just became available - stop any lingering decay if active
             if current_evidence:
                 self.decay.stop_decay()
+                self._began_counting()
                 self.last_updated = dt_util.utcnow()
             self.previous_evidence = current_evidence
             # If entity became available with positive evidence (e.g. unknown→occupied
@@ -802,13 +834,15 @@ class Entity:
             # a decay that would count it after all.
             was_stuck = self.is_stuck
             self.stuck_since = None
-            self.last_updated = dt_util.utcnow()
+            now = dt_util.utcnow()
             if current_evidence:  # FALSE→TRUE transition
                 self.decay.stop_decay()
+                self._began_counting()
             elif not was_stuck:  # TRUE→FALSE transition
                 # Evidence lost - start decay (after the PIR timeout, if any)
                 self.decay.start_decay(delay=self.decay_delay)
-                self.counted_at = self.last_updated
+                self._stopped_counting(now)
+            self.last_updated = now
         elif (
             current_evidence
             and self.active_states
@@ -1382,6 +1416,7 @@ class EntityManager:
             new.previous_state = old.previous_state
             new.settle_delay = old.settle_delay
             new.counted_at = old.counted_at
+            new.bridged_gap = old.bridged_gap
         previous.clear()
         _LOGGER.debug("Refreshed entities from config for area: %s", self.area_name)
 
