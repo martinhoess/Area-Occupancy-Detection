@@ -105,28 +105,98 @@ class TestRoomTrackerSettle:
         self._move(hass, tracker, "Livingroom")
         assert tracker.decay.is_decaying
 
-    def test_flicker_during_a_stay_keeps_the_fade(
+    def test_flicker_during_a_stay_keeps_counting(
         self,
         hass: HomeAssistant,
         coordinator: AreaOccupancyCoordinator,
         freezer: FrozenDateTimeFactory,
         tracker: Entity,
     ) -> None:
-        """In bed, the phone jumps out and back: the fade bridges the gap."""
+        """In bed, the phone jumps out for 3 s every minute: the stay goes on."""
+        self._refresh(coordinator)
+        self._move(hass, tracker, "Bedroom")
+        freezer.tick(SETTLED)
+        self._refresh(coordinator)
+        for _ in range(20):
+            self._move(hass, tracker, "Livingroom")
+            freezer.tick(timedelta(seconds=3))
+            self._move(hass, tracker, "Bedroom")
+            self._refresh(coordinator)
+            assert tracker.evidence is True
+            assert not tracker.decay.is_decaying
+            freezer.tick(timedelta(seconds=57))
+            self._refresh(coordinator)
+
+    def test_jump_long_after_a_stay_waits(
+        self,
+        hass: HomeAssistant,
+        coordinator: AreaOccupancyCoordinator,
+        freezer: FrozenDateTimeFactory,
+        tracker: Entity,
+    ) -> None:
+        """The bridge covers ROOM_GAP after a counted stay, not a later jump."""
         self._refresh(coordinator)
         self._move(hass, tracker, "Bedroom")
         freezer.tick(SETTLED)
         self._refresh(coordinator)
         self._move(hass, tracker, "Livingroom")
-        freezer.tick(timedelta(seconds=3))
+        freezer.tick(timedelta(minutes=5))
         self._move(hass, tracker, "Bedroom")
         self._refresh(coordinator)
         assert tracker.evidence is False
-        assert tracker.decay.is_decaying
-        freezer.tick(SETTLED)
-        self._refresh(coordinator)
+
+    def test_restart_keeps_a_counted_stay(
+        self,
+        hass: HomeAssistant,
+        coordinator: AreaOccupancyCoordinator,
+        tracker: Entity,
+    ) -> None:
+        """After a restart last_changed is the start time; the stay still counts.
+
+        The settled stay ends with no decay: reconcile and the first refresh
+        judge the tracker alike, and the bridge keeps the restored stay.
+        """
+        hass.states.async_set(TRACKER, "Bedroom")  # state written at start
+        tracker.previous_evidence = True  # restored from the database
+        with patch.object(
+            type(coordinator.integration_config),
+            "people",
+            new_callable=PropertyMock,
+            return_value=[PERSON],
+        ):
+            coordinator._reconcile_entity_state()
+            coordinator._settle_room_trackers()  # first refresh
         assert tracker.evidence is True
         assert not tracker.decay.is_decaying
+
+    async def test_refresh_ignores_a_short_jump(
+        self,
+        hass: HomeAssistant,
+        coordinator: AreaOccupancyCoordinator,
+        freezer: FrozenDateTimeFactory,
+        tracker: Entity,
+    ) -> None:
+        """Through the coordinator's refresh: a 3 s jump leaves the area as it was."""
+        area = coordinator.areas["Bedroom"]
+        with patch.object(
+            type(coordinator.integration_config),
+            "people",
+            new_callable=PropertyMock,
+            return_value=[PERSON],
+        ):
+            await coordinator.async_refresh()
+            before = area.probability()
+            self._move(hass, tracker, "Bedroom")
+            freezer.tick(timedelta(seconds=3))
+            await coordinator.async_refresh()
+            assert area.probability() == pytest.approx(before)
+            self._move(hass, tracker, "Livingroom")
+            await coordinator.async_refresh()
+            assert area.probability() == pytest.approx(before)
+            self._move(hass, tracker, "Bedroom")
+            freezer.tick(SETTLED)
+            await coordinator.async_refresh()  # a decay tick, no state change
+            assert area.probability() > before
 
     def test_other_sensors_count_at_once(
         self,

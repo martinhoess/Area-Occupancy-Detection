@@ -33,6 +33,7 @@ from .entity_type import (
     InputType,
 )
 from .purpose import AreaPurpose, get_default_decay_half_life
+from .quiet_sleep import ROOM_GAP
 from .types import GaussianParams
 
 if TYPE_CHECKING:
@@ -166,6 +167,11 @@ class Entity:
     # Seconds a new active state must hold before it counts as evidence,
     # set by the coordinator for a person's room tracker (fork), else 0.
     settle_delay: float = 0.0
+    # When this sensor last stopped counting after it had counted (fork): a
+    # state that began before it or up to ROOM_GAP after it counts at once.
+    # That bridges a tracker's drop-out, and the start-time last_changed
+    # after a restart for a restored stay.
+    counted_at: datetime | None = None
 
     def __post_init__(self) -> None:
         """Validate that either hass or state_provider is provided.
@@ -526,11 +532,12 @@ class Entity:
         if self.settle_delay <= 0 or self.hass is None:
             return False
         ha_state = self.hass.states.get(self.entity_id)
-        return (
-            ha_state is not None
-            and (dt_util.utcnow() - ha_state.last_changed).total_seconds()
-            < self.settle_delay
-        )
+        if ha_state is None:
+            return False
+        since = ha_state.last_changed
+        if self.counted_at is not None and since - self.counted_at <= ROOM_GAP:
+            return False  # back right after a counted stay: the stay goes on
+        return (dt_util.utcnow() - since).total_seconds() < self.settle_delay
 
     @property
     def active(self) -> bool:
@@ -763,7 +770,7 @@ class Entity:
                 if not self.is_stuck:
                     self.decay.start_decay()
                 self.stuck_since = None
-                self.last_updated = dt_util.utcnow()
+                self.last_updated = self.counted_at = dt_util.utcnow()
             # Update previous evidence to track the unavailable state
             self.previous_evidence = current_evidence
             return False  # No "new evidence" but decay state updated
@@ -801,6 +808,7 @@ class Entity:
             elif not was_stuck:  # TRUE→FALSE transition
                 # Evidence lost - start decay (after the PIR timeout, if any)
                 self.decay.start_decay(delay=self.decay_delay)
+                self.counted_at = self.last_updated
         elif (
             current_evidence
             and self.active_states
@@ -1372,6 +1380,8 @@ class EntityManager:
             new.contradicted_since = old.contradicted_since
             new.active_state_changed_at = old.active_state_changed_at
             new.previous_state = old.previous_state
+            new.settle_delay = old.settle_delay
+            new.counted_at = old.counted_at
         previous.clear()
         _LOGGER.debug("Refreshed entities from config for area: %s", self.area_name)
 

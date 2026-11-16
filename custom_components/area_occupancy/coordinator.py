@@ -615,6 +615,7 @@ class AreaOccupancyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         2. Calls has_new_evidence() on every entity so that previous_evidence
            is reconciled against the live HA state.
         """
+        self._settle_room_trackers()
         for area in self.areas.values():
             # Resolve expired decays immediately
             area.tick_decay()
@@ -866,7 +867,8 @@ class AreaOccupancyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Let a person's room tracker count only once its room has held.
 
         A settled tracker turns active without a state change, so its
-        transition is taken here, on every refresh.
+        transition is taken here, on every refresh, and before the first
+        reconcile so both judge alike.
 
         shortcut: the decay timer refreshes only when some area has decay
         enabled; without it a settled tracker waits for the next refresh.
